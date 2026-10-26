@@ -38,3 +38,24 @@ def test_create_demo_switches_to_new_snapshot_even_when_older_date(tmp_path, mon
     next(b for b in app.button if b.label == "创建离线演示数据").click().run()
     assert not app.exception
     assert app.metric[0].value == "2025-12-31"
+
+
+def test_legacy_quality_report_is_rechecked_before_displaying_publishable(tmp_path, monkeypatch):
+    import json
+
+    from finsight.data.demo import make_demo
+    from finsight.data.quality import audit
+
+    monkeypatch.setenv("FINSIGHT_DATA_DIR", str(tmp_path))
+    service = FinSight(tmp_path)
+    bundle = make_demo(date(2025, 2, 28), date(2024, 1, 2))
+    previous_quality = audit(bundle)
+    bundle.meta.synthetic = False
+    bundle.tables["universe"]["known_on"] = "2025-03-03"
+    service.store.save_snapshot(bundle)
+    quality_file = tmp_path / "snapshots" / bundle.meta.snapshot_id / "quality.json"
+    quality_file.write_text(json.dumps(previous_quality), encoding="utf-8")
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    assert not app.exception
+    assert app.metric[3].value == "阻止发布"
+    assert next(button for button in app.button if button.label == "运行选股").disabled

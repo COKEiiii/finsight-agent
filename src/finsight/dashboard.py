@@ -98,7 +98,7 @@ def main():
             choices.insert(0, preferred.snapshot_id)
         snapshot_id = st.selectbox("数据快照", choices, format_func=lambda s: (
             f"{'演示' if by_id[s].synthetic else 'AKShare'} · {by_id[s].as_of} · "
-            f"{by_id[s].publication_status} · {s[-6:]}"), key="snapshot_choice")
+            f"{'待复核' if by_id[s].schema_version < 2 and not by_id[s].synthetic else by_id[s].publication_status} · {s[-6:]}"), key="snapshot_choice")
         st.caption(f"快照：{snapshot_id}")
     metadata = by_id[snapshot_id]
     quality_file = service.store.root / "snapshots" / snapshot_id / "quality.json"
@@ -107,6 +107,11 @@ def main():
     lower = sessions[max(0, len(sessions) - 61)] if sessions else str(metadata.as_of)
     bundle = service.store.load_snapshot(snapshot_id, date_range=(lower, str(metadata.as_of)))
     quality = json.loads(quality_file.read_text(encoding="utf-8")) if quality_file.exists() else audit(bundle)
+    if quality.get("config_id") != service.config.config_id:
+        stored_counts = quality.get("table_rows")
+        quality = audit(bundle, service.config)
+        if stored_counts:
+            quality["table_rows"] = stored_counts
     if bundle.meta.synthetic:
         st.info("当前为合成演示数据；图表与选股结果用于展示软件流程。")
     if not quality["research_eligible"]:

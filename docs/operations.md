@@ -39,6 +39,8 @@ The first complete mainboard snapshot enables a separate 18:15 pilot job. The ex
 
 ## Reproducible use
 
+After installing a new version or changing Python data models, stop and restart the existing Streamlit process before refreshing the browser. A browser refresh or a healthy `/_stcore/health` response does not prove that the server has reloaded its imported models. A stale process can report extra-field validation errors when opening newer snapshots. The data collector runs separately and does not need to be stopped for a UI restart. Keep dashboard output in `data/finsight/dashboard.log` when running it in the background.
+
 1. Sync a snapshot and review its quality report.
 2. Run screening against its explicit snapshot ID; save the run ID.
 3. Generate local research cards for that run. Start with `--limit 1`.
