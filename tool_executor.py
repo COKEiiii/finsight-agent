@@ -1,11 +1,12 @@
 from tool_registry import TOOL_REGISTRY
 
 
-def execute_tool(tool_call):
+def execute_tool(tool_call, registry=None):
+    registry = TOOL_REGISTRY if registry is None else registry
     tool_name = tool_call["function"]["name"]
     tool_args = tool_call["function"]["arguments"]
-    tool_function = TOOL_REGISTRY.get(tool_name, {}).get("function")
-    tool_validator = TOOL_REGISTRY.get(tool_name, {}).get("validator")
+    tool_function = registry.get(tool_name, {}).get("function")
+    tool_validator = registry.get(tool_name, {}).get("validator")
 
     if tool_function is None or tool_validator is None:
         return {

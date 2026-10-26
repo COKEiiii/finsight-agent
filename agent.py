@@ -35,7 +35,8 @@ def run_agent(
     max_tool_calls=8,
     max_same_tool_repeats=3, # 同一个工具同一组参数连续重复
     max_consecutive_tool_errors=3, # 防止工具连续执行失败，即使参数不同
-    think=None
+    think=None,
+    tool_registry=None,
 )-> dict:
     messages.append(
         {
@@ -132,7 +133,7 @@ def run_agent(
             same_tool_repeat_count = 1
         last_tool_signature = tool_signature
 
-        tool_result = execute_tool(tool_call)
+        tool_result = execute_tool(tool_call) if tool_registry is None else execute_tool(tool_call, registry=tool_registry)
         if tool_result["success"] is False:
             consecutive_tool_errors += 1
         else:

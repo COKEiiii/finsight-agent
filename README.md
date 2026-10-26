@@ -1,34 +1,121 @@
-# AI Agent Basics
+# FinSight A-Share
 
-这是一个从零开始学习 AI Agent 的练习项目。
+A 股多因子选股、基于证据的中文 AI 研究、历史研究演示和人工模拟投资日志。研究模型默认使用本地 **Ollama**，以后可通过配置切换 DeepSeek。
 
-当前阶段只完成环境配置，暂时不包含 Agent 代码。后续会从最简单的模型调用开始，逐步学习：
+```text
+数据快照 → 固定规则筛选 → Top 10 → AI 研究卡 → 模拟组合计划 → 人工交易与复盘
+```
 
-1. 调用 LLM
-2. 理解 messages
-3. 设计 prompt
-4. 让模型调用一个 Python function
-5. 建立最简单的 Agent Loop
+## 安装与启动
 
-## 环境
-
-- Python 3.11+
-- Ollama
-- 本地模型：`llama3.1:8b-instruct-q4_K_M`
-
-## 使用环境
+Python 3.11 或 3.12，在仓库根目录执行：
 
 ```bash
-cd /Users/zhaolei/Developer/AI_agent_basics
+python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install '.[dev]'
+cp .env.example .env  # 已有 .env 时，请补充新配置，不要覆盖
+finsight demo
+finsight dashboard
 ```
 
-## 验证依赖
+`finsight demo` 使用固定随机种子的虚构数据及离线模板，不联网、不调用模型，生成 10 个候选、研究卡和 2025 年回测演示。数据、SQLite 和导出文件默认位于 `data/finsight/`，已排除在 Git 之外。
+
+开发时可使用 `pip install -e '.[dev]'`；如果本机忽略了 editable `.pth` 文件，使用非 editable 安装，或以 `PYTHONPATH=src python -m finsight ...` 运行源码。
+
+## 用本地模型生成研究卡
 
 ```bash
-python -c "import ollama, dotenv; print('environment ready')"
+ollama serve                         # 已运行时跳过
+ollama pull qwen3.5:4b               # 已下载时跳过
+finsight screen                     # 复制输出中的 run_id
+finsight research --run RUN_ID --provider ollama --model qwen3.5:4b --limit 1
 ```
 
-## 当前状态
+Dashboard 的“研究卡”页面也可选择本地模型。默认先生成一只股票，按需扩大到 Top 10。模型仅能读取当前候选股的快照证据；不会调整量化排名。每只最多 3 次模型请求、6 次工具执行、每次输出上限 1500 tokens；失败与格式修正计入预算。页面刷新不触发调用，相同输入、提示词、模型和端点复用缓存。离线模板会明确标为 `demo`。
 
-这是一个干净的起点。下一步将创建第一个最小 Python 文件，只完成一次 LLM 调用，不加入 tools、Agent Loop 或复杂抽象。
+配置示例：
+
+```dotenv
+FINSIGHT_DATA_DIR=data/finsight
+FINSIGHT_PROVIDER=ollama
+FINSIGHT_MODEL=qwen3.5:4b
+OLLAMA_HOST=http://localhost:11434
+# 以后切换：FINSIGHT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-flash
+```
+
+也可显式执行 `finsight research --run RUN_ID --provider deepseek`。API Key 只从环境读取，不保存到报告或数据库。
+
+## 数据采集
+
+```bash
+finsight sync --provider akshare                     # 20 只跨行业样本
+finsight sync --provider akshare --universe mainboard # 完整当前沪深主板，耗时较长
+finsight sync --provider akshare --symbols 600036,000333
+finsight screen --snapshot SNAPSHOT_ID
+finsight status
+```
+
+真实数据收盘后北京时间 18:00 起更新。默认历史预热窗口为 430 天，可用 `--start 2022-01-01` 扩大。使用交易所股票列表、日线、年报业绩、单股历史 PE-TTM/PB 和沪深 300 指数，不用动态 PE 冒充 PE-TTM。各接口有进程级超时、有限重试、原始结果缓存和抓取时间；上游失效会显示错误，不替换成演示数据。
+
+快照为追加保存的 Parquet 和元数据，并核验文件哈希。财报保存报告期、公告日、首次可见日及版本。日期精度的公告保守地从下一交易日使用，新抓取的修订数据不会回填到其首次观测之前。今日股票状态不冒充历史状态。
+
+持续采集：
+
+```bash
+finsight watch --once                # 检查最近已完成交易日；适合系统调度
+finsight watch                       # 常驻检查，补采行情历史
+```
+
+可在 cron/launchd 中每个工作日 18:05 运行 `watch --once`，也可每天登录时执行一次。休眠期间错过的行情可以补采，未保存的当日财务/股票状态版本不可事后重建；质量报告列出缺失快照日期。程序不会把补采值伪装成当日已知信息。系统调度的安装方式见 [运行说明](docs/operations.md)。
+
+## strategy_v0.1
+
+- 沪深主板、上市满两年，排除 ST、退市整理、停牌及缺失必要数据。
+- 近 20 交易日平均成交额至少 5000 万元；要求连续 61 个交易日用于趋势计算。
+- 最新可用年报的 ROE、年营收同比增长各 20%；60 日动量、MA20/MA60−1 各 20%；正 PE-TTM、正 PB 各 10%。年报报告期距选股日不超过 550 天。
+- 在合格股票池内进行百分位排名；并列取平均名次，估值反向排序，总分并列按代码排序。
+- Top 10 中按排名构造最多 8 只、每只 10%、同一行业最多 3 只的参考组合，剩余留现金。
+- 月末收盘生成调仓计划，下一个交易日执行；单股目标上限 15%，股票总目标上限 80%。
+
+所有默认参数见 [策略配置](config/strategy_v0.1.json)。同一数据目录中，同一策略版本不可换参数；调整时更换版本后用 `finsight --config NEW_CONFIG.json ...`。负增长保留，缺失因子不填零。估值第一版在全股票池排名，保留行业暴露供复盘。
+
+## 回测与研究验收
+
+```bash
+finsight backtest --start 2023-01-01 --end 2024-12-31 # 开发区间
+finsight backtest --start 2025-01-01 --end 2025-12-31 # 独立验证区间
+```
+
+回测采用现金与持仓账本、收盘信号次日开盘执行、T+1、100 股买入、费用、滑点和未成交记录。未核验涨跌停价时不假设成交。分红送转使用公司行动表进入股数、现金及应收账本；默认分红采用税前金额。默认佣金双边万三、最低 5 元，税费按生效日期处理，滑点单边 5bp。
+
+对照包含相同准入股票池的纯 60 日动量组合、沪深 300 价格指数、80% 指数加 20% 现金对照。保存净值、回撤、风险、换手、费用、行业暴露、信号和执行明细。短样本的年化指标不能证明策略有效性。
+
+**产品验收与研究验收独立。** 演示数据永远不通过研究验收。AKShare 最新列表/财报不自动证明历史可得性；历史股票池、ST 状态、退市、财务修订、估值、复权和公司行动任一未核验，报告均显示“研究演示：历史验证未通过”。当前适配器不自动授予通过状态。详细限制见 [架构与验收](docs/architecture.md)。
+
+## 人工模拟日志
+
+每次选股导出 `journal_template.csv` 和 `portfolio_plan.json`。在同花顺人工操作后，通过 Dashboard 或 CSV 记录计划、委托、成交、撤单、拒单与费用：
+
+```bash
+finsight journal import path/to/journal.csv
+finsight journal export --account paper
+finsight journal report --account paper --capital 100000
+finsight journal report --capital 100000 --actual-cash 80000 --actual-holdings holdings.json
+```
+
+`holdings.json` 格式为 `{"600036.SH": 100}`。成交事件的 `quantity` 为**本次增量成交量**；不能既导入两笔部分成交，再重复导入包含它们的累计成交量。`event_id` 支持幂等导入；同 ID 内容冲突时整批回滚。每条事件关联已有选股记录和策略版本。首次录入前，账户应为空仓；导入交易应从账户起点完整记录。
+
+## 检查与项目结构
+
+```bash
+python -m pytest -q
+python -m ruff check src/finsight tests/finsight
+```
+
+`src/finsight/` 包含数据、选股、研究、回测、组合、服务、CLI 和 Dashboard。原有根目录 `app.py`、`agent.py`、通用工具和测试继续作为 Ollama 学习入口；Agent 支持注入独立工具注册表。GitHub Actions 在 Python 3.11/3.12 上运行测试、静态检查和离线 Demo。
+
+参考：[TradingAgents](https://github.com/TauricResearch/TradingAgents)、[TradingAgents-CN](https://github.com/hsliuping/TradingAgents-CN)、[AKShare](https://akshare.akfamily.xyz/data/stock/stock.html)、[Ollama](https://docs.ollama.com/capabilities/tool-calling)、[DeepSeek Tool Calls](https://api-docs.deepseek.com/guides/tool_calls/)。本项目独立实现本地轻量工作流。

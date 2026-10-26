@@ -6,3 +6,11 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+data/finsight/
+reports/
+.coverage
+htmlcov/

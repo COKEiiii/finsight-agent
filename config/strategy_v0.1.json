@@ -1,0 +1,13 @@
+{
+  "version": "strategy_v0.1",
+  "top_n": 10,
+  "min_listing_years": 2,
+  "min_amount_20": 50000000,
+  "max_report_age_days": 550,
+  "weights": {"roe": 0.2, "revenue_growth": 0.2, "momentum_60": 0.2, "ma_ratio": 0.2, "pe_ttm": 0.1, "pb": 0.1},
+  "max_holdings": 8,
+  "target_weight": 0.1,
+  "max_industry_names": 3,
+  "max_stock_weight": 0.15,
+  "max_equity_weight": 0.8
+}
