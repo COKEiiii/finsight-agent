@@ -125,6 +125,7 @@ class ResearchCard(StrictModel):
     prompt_version: str
     status: Literal["completed", "failed", "demo"]
     content: ResearchContent | None = None
+    content_template: ResearchContent | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
     llm_calls: int = 0

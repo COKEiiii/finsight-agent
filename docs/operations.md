@@ -27,7 +27,15 @@ Linux/macOS cron alternative (replace paths):
 5 18 * * 1-5 cd /absolute/path/finsight-agent && /absolute/path/finsight-agent/.venv/bin/finsight watch --once >> /absolute/path/finsight-agent/data/finsight-watch.log 2>&1
 ```
 
-Collection after a missed day downloads available historical bars but cannot reconstruct that day's uncaptured financial revisions or stock state. Quality reports keep gaps visible. No automatic screening, model call or trading is scheduled; review each captured dataset first.
+Collection after a missed day downloads available historical bars but cannot reconstruct that day's uncaptured financial revisions or stock state. Quality reports keep gaps visible. Completed collection jobs automatically validate and screen the snapshot. Subthreshold results are marked as previews. Model calls and trading remain manual.
+
+## Mainboard jobs and recovery
+
+Start with `sync --provider akshare --universe mainboard --limit 100 --background`, then validate 500 stocks before a complete initialization. Use `jobs list`, `jobs show JOB_ID` and `jobs resume JOB_ID` to inspect and resume the same durable job. Successful raw responses retain their original observation time. Resume retries failed requests and reuses successful checkpoints; a new trading date creates a new snapshot with an explicit universe definition and member hash.
+
+Prices and valuations are stored locally as immutable Parquet partitions referenced by snapshot manifests. Daily jobs request the missing range plus ten overlapping sessions to check revisions. Eastern Money's valuation endpoint still returns the stock's entire valuation history before local slicing; the BaoStock alternate requests a date range. Industry classification is cached for seven days. Financial metrics are checked daily and retain the original weighted annual ROE definition; BaoStock average ROE is not accepted as an equivalent.
+
+The first complete mainboard snapshot enables a separate 18:15 pilot job. The existing 18:05 sample collector is promoted only after five distinct consecutive real mainboard sessions publish at or above 98% coverage. Batch validation, previews and demo data do not count. A launchd setup error is reported separately from an already saved ranking.
 
 ## Reproducible use
 

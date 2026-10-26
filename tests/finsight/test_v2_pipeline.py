@@ -61,6 +61,18 @@ def test_vectorized_factors_match_original_oracle(bundle, config):
                                  expected[fields].sort_values("symbol").reset_index(drop=True), check_exact=False, rtol=1e-12)
 
 
+def test_average_roe_cannot_silently_replace_frozen_weighted_roe(bundle, config):
+    value = version2(bundle)
+    symbol = value.meta.membership_symbols[0]
+    mask = value["financials"]["symbol"] == symbol
+    value.tables["financials"].loc[mask, "source"] = "baostock:query_profit_data"
+    value.tables["financials"].loc[mask, "roe_basis"] = "average_annual"
+    frame, exclusions = compute_factors(value, value.meta.as_of, config)
+    assert symbol not in set(frame["symbol"])
+    row = next(item for item in exclusions if item["symbol"] == symbol)
+    assert row["category"] == "data" and "financial_definition_mismatch" in row["codes"]
+
+
 @pytest.mark.parametrize("missing,can_publish", [(20, True), (21, False)])
 def test_98_percent_boundary_is_exact(bundle, missing, can_publish):
     value = expand(bundle, 1000)
@@ -122,24 +134,35 @@ def test_partition_manifest_deduplicates_and_reads_only_needed_window(bundle, st
         store.load_snapshot(value.meta.snapshot_id)
 
 
-def test_factor_cache_invalidates_and_scores_always_rerank(bundle, store):
+def test_factor_cache_invalidates_and_scores_always_rerank(bundle, store, monkeypatch):
+    import finsight.screening as screening_module
+    calls = []
+    original = screening_module.compute_factors
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(screening_module, "compute_factors", counted)
     value = version2(bundle)
     first = screen(value, store=store)
     again = screen(value, store=store)
     assert again.factor_cache_hits == 20 and first.candidates == again.candidates
+    assert len(calls) == 1
     symbol = value["universe"].iloc[0]["symbol"]
     value.tables["financials"].loc[value["financials"]["symbol"] == symbol, "roe"] = 80
     revised = screen(value, store=store)
     assert revised.factor_cache_hits == 19
+    assert len(calls) == 2
 
 
-def test_3000_stock_vectorized_ranking_under_one_minute(bundle):
+def test_3000_stock_vectorized_ranking_under_one_minute(bundle, store):
     value = expand(bundle, 3000)
     started = time.perf_counter()
-    first = screen(value)
+    first = screen(value, store=store)
     assert time.perf_counter() - started < 60
     assert first.eligible_count == 3000 and len(first.candidates) == 10
-    assert first.candidates == screen(value).candidates
+    assert first.candidates == screen(value, store=store).candidates
 
 
 class EchoAPI:

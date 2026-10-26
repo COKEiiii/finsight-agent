@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 from finsight.config import load_strategy
+from finsight.data.requests import SourceUnavailable
 from finsight.portfolio import import_journal, journal_entries
 from finsight.service import FinSight
 
@@ -111,6 +112,14 @@ def check_daily(service: FinSight, universe: str, now: datetime | None = None) -
     failed = next((s for s in saved if s.as_of == day), None)
     if failed and (now - failed.captured_at).total_seconds() < 3600:
         return {"status": "waiting_retry", "as_of": str(day), "note": "last failed batch is retained; retry cooldown is one hour"}
+    with service.store.connect() as db:
+        failed_jobs = db.execute("SELECT job_id,config,updated_at FROM jobs WHERE status='failed' ORDER BY updated_at DESC LIMIT 100").fetchall()
+    for job in failed_jobs:
+        config = json.loads(job["config"])
+        if config.get("universe_id") == uid and config.get("as_of") == str(day) and 0 <= (
+            now - datetime.fromisoformat(job["updated_at"])).total_seconds() < 3600:
+            return {"status": "waiting_retry", "as_of": str(day), "job_id": job["job_id"],
+                    "note": "failed task checkpoints retained; automatic retry cooldown is one hour"}
     return service.sync("akshare", day, mainboard=universe == "mainboard")
 
 
@@ -151,7 +160,12 @@ def main(argv: list[str] | None = None) -> int:
             output({k: result[k] for k in ("run_id", "status", "start", "end", "synthetic") } |
                    {"metrics": result["strategy"]["metrics"], "exports": str(service.store.artifact_dir(result["run_id"]))})
         elif args.command == "status":
+            from finsight.jobs import Jobs
+            from finsight.scheduler import rollout_status
             output({"snapshots": [s.model_dump(mode="json") for s in service.store.snapshots()],
+                    "mainboard_rollout": rollout_status(service.store),
+                    "collection_jobs": [{key: job[key] for key in ("job_id", "status", "snapshot_id", "error")}
+                                        for job in Jobs(service.store).list()[:10]],
                     "runs": [{k: row[k] for k in ("run_id", "kind", "snapshot_id", "created_at")} for row in service.store.runs()]})
         elif args.command == "journal":
             if args.journal_command == "import":
@@ -168,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
             while True:
                 try:
                     output(check_daily(service, args.universe))
-                except (ValueError, OSError) as exc:
+                except (ValueError, OSError, SourceUnavailable) as exc:
                     if args.once:
                         raise
                     output({"status": "sync_failed", "error": str(exc)})
@@ -205,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
                 jobs.resume(args.job_id)
                 output(jobs.launch(args.job_id))
         return 0
-    except (ValueError, OSError, KeyError) as exc:
+    except (ValueError, OSError, KeyError, SourceUnavailable) as exc:
         print(f"FinSight: {exc}", file=sys.stderr)
         return 2
 

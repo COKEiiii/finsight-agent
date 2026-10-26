@@ -59,8 +59,11 @@ def evaluate(bundle: SnapshotBundle, as_of: date, config: StrategyConfig) -> tup
         price_map = {}
     financials = bundle["financials"]
     financials = financials[(financials["available_on"] <= day) & (financials["announcement_date"] < day) &
-                            financials["report_period"].str.endswith("12-31")]
-    financials = financials.sort_values(["report_period", "available_on"], kind="stable").drop_duplicates("symbol", keep="last").set_index("symbol").to_dict("index")
+                            financials["report_period"].str.endswith("12-31")].copy()
+    basis = financials.get("roe_basis", pd.Series(index=financials.index, dtype="string"))
+    source = financials.get("source", pd.Series("", index=financials.index)).fillna("").astype(str)
+    financials["_roe_compatible"] = (basis.isna() | basis.eq("weighted_annual")) & ~source.str.contains("baostock", case=False)
+    financials = financials.sort_values(["report_period", "_roe_compatible", "available_on"], kind="stable").drop_duplicates("symbol", keep="last").set_index("symbol").to_dict("index")
     vals = bundle["valuations"]
     vals = vals[vals["trade_date"] == day].drop_duplicates("symbol", keep="last").set_index("symbol").to_dict("index")
     state_map = states.to_dict("index")
@@ -125,6 +128,8 @@ def evaluate(bundle: SnapshotBundle, as_of: date, config: StrategyConfig) -> tup
             if metric["valid_adj"] < metric["count"] or metric["min_adj"] <= 0:
                 reject("factor_input_missing", "nonfinite or missing factor input")
         if fin:
+            if not fin["_roe_compatible"]:
+                reject("financial_definition_mismatch", "ROE definition differs from the frozen weighted annual metric")
             if not all(pd.notna(fin.get(k)) and np.isfinite(float(fin[k])) for k in ("roe", "revenue_growth")):
                 reject("financial_value_missing", "nonfinite or missing factor input")
             age = (as_of - date.fromisoformat(fin["report_period"])).days

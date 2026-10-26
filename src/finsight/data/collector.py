@@ -52,10 +52,10 @@ class Collector(AKShareProvider):
             with broker.store.connect() as db:
                 row = db.execute("SELECT 1 FROM job_requests r JOIN jobs j ON j.job_id=r.job_id "
                     "WHERE r.method='stock_yjbb_em' AND r.error_kind IN ('timeout','rate_limit') "
-                    "AND substr(j.created_at,1,10)=? LIMIT 1", (broker.clock().date().isoformat(),)).fetchone()
+                    "AND substr(j.created_at,1,10)>=? LIMIT 1", ((broker.clock().date() - timedelta(days=7)).isoformat(),)).fetchone()
             self.fallback_market = row is not None
             if self.fallback_market:
-                self.issues.append("今日东方财富批量财报曾超时；采用 BaoStock 行情/ROE 与新浪年报收入备用路径。")
+                self.issues.append("近七日东方财富批量财报曾超时；行情使用 BaoStock，财务仍取单股年报加权 ROE。")
         self.base_groups = {key: {s: f for s, f in base[key].groupby("symbol", sort=False)} if base is not None and "symbol" in base[key] else {}
                             for key in ("prices", "financials", "valuations")}
 
@@ -127,7 +127,8 @@ class Collector(AKShareProvider):
             lambda d: max(next((s for s in calendar["trade_date"] if s > str(d)), "9999-12-31"), fetched[:10]))
         frame["version"] = "observed-" + fetched
         frame["source"], frame["fetched_at"] = "akshare:stock_yjbb_em", fetched
-        return frame[["symbol", "report_period", "announcement_date", "available_on", "roe", "revenue_growth", "version", "source", "fetched_at"]]
+        frame["roe_basis"] = "weighted_annual"
+        return frame[["symbol", "report_period", "announcement_date", "available_on", "roe", "revenue_growth", "version", "source", "fetched_at", "roe_basis"]]
 
     def financial_history(self, symbol: str, start: date, day: date, calendar: pd.DataFrame):
         frame = self.call("stock_financial_analysis_indicator_em", symbol=symbol, indicator="按报告期")
@@ -141,7 +142,8 @@ class Collector(AKShareProvider):
         frame["available_on"] = frame["announcement_date"].map(
             lambda d: max(next((s for s in calendar["trade_date"] if s > str(d)), "9999-12-31"), fetched[:10]))
         frame["version"], frame["source"], frame["fetched_at"] = "observed-" + fetched, "akshare:stock_financial_analysis_indicator_em", fetched
-        return frame[["symbol", "report_period", "announcement_date", "available_on", "roe", "revenue_growth", "version", "source", "fetched_at"]]
+        frame["roe_basis"] = "weighted_annual"
+        return frame[["symbol", "report_period", "announcement_date", "available_on", "roe", "revenue_growth", "version", "source", "fetched_at", "roe_basis"]]
 
     def _bars(self, code: str, lower: str, day: str):
         kwargs = dict(symbol=code, period="daily", start_date=lower.replace("-", ""), end_date=day.replace("-", ""))
@@ -222,22 +224,25 @@ class Collector(AKShareProvider):
                 records.append({"symbol": symbol, "report_period": current, "announcement_date": announcement,
                     "available_on": available, "roe": float(roe) * 100,
                     "revenue_growth": (float(revenue) / float(prior) - 1) * 100,
+                    "roe_basis": "average_annual",
                     "version": "observed-" + fetched, "source": "baostock:query_profit_data+sina:stock_financial_report_sina",
                     "fetched_at": fetched})
             except (ValueError, KeyError, IndexError):
                 continue
-        return pd.DataFrame(records, columns=sorted(REQUIRED["financials"] | {"version", "source", "fetched_at"}))
+        return pd.DataFrame(records, columns=sorted(REQUIRED["financials"] | {"version", "source", "fetched_at", "roe_basis"}))
 
     def _symbol(self, stock, annual, start, day, calendar):
         self.jobs.check_cancelled(self.job_id)
         symbol, code, issues = stock["symbol"], stock["code"], []
         observed = stock.get("observed_at") or self.observed("stock_individual_info_em", symbol=code, timeout=10)
+        observed = max(observed, stock.get("industry_observed_at") or observed)
         industry = stock.get("industry")
+        industry_source = stock.get("industry_source") or "stock_individual_info_em"
         try:
             info = self.call("stock_individual_info_em", symbol=code, timeout=10) if not self.fallback_market else pd.DataFrame({"item": [], "value": []})
             industry_observed = info.attrs.get("fetched_at", observed)
             values = dict(zip(info["item"], info["value"]))
-            industry = values.get("行业")
+            industry = values.get("行业", industry)
             if pd.isna(stock.get("listed_on")):
                 value = pd.to_datetime(str(values.get("上市时间")).split(".")[0], format="%Y%m%d", errors="coerce")
                 stock["listed_on"] = None if pd.isna(value) else value.strftime("%Y-%m-%d")
@@ -246,7 +251,7 @@ class Collector(AKShareProvider):
             issues.append(f"{symbol}: metadata: {exc}")
         state = dict(symbol=symbol, name=stock["name"], industry=industry, listed_on=stock.get("listed_on"),
             board="mainboard", is_st="ST" in stock["name"].upper(), is_delisting="退" in stock["name"],
-            known_on=observed[:10], is_member=True, source="akshare:observed-current-list", industry_source="stock_individual_info_em")
+            known_on=observed[:10], is_member=True, source="akshare:observed-current-list", industry_source=industry_source)
         old_prices = self.base_groups["prices"].get(symbol, pd.DataFrame(columns=sorted(REQUIRED["prices"])))
         old_vals = self.base_groups["valuations"].get(symbol, pd.DataFrame(columns=sorted(REQUIRED["valuations"])))
         old_fin = self.base_groups["financials"].get(symbol, pd.DataFrame(columns=sorted(REQUIRED["financials"])))
@@ -307,8 +312,15 @@ class Collector(AKShareProvider):
         fin = annual[annual["symbol"] == symbol] if not annual.empty else annual
         if fin.empty:
             try:
-                fin = (self.financial_history_fallback(symbol, start, date.fromisoformat(day), calendar)
-                       if self.fallback_market else self.financial_history(symbol, start, date.fromisoformat(day), calendar))
+                recent_cached = False
+                if self.fallback_market and not old_fin.empty and "fetched_at" in old_fin:
+                    latest = old_fin.sort_values("report_period").iloc[-1]
+                    fetched = pd.to_datetime(latest["fetched_at"], errors="coerce")
+                    recent_cached = (pd.notna(fetched) and
+                        fetched.date() == self.broker.clock().date() and
+                        latest.get("roe_basis") == "weighted_annual" and
+                        (date.fromisoformat(day) - date.fromisoformat(latest["report_period"])).days <= 550)
+                fin = old_fin if recent_cached else self.financial_history(symbol, start, date.fromisoformat(day), calendar)
             except (ValueError, KeyError) as exc:
                 issues.append(f"{symbol}: financials unavailable: {exc}")
         if not fin.empty or not old_fin.empty:
@@ -354,14 +366,17 @@ class Collector(AKShareProvider):
                 except (ValueError, KeyError) as exc:
                     self.issues.append(f"annual {year}: {exc}")
                     self.fallback_market = True
-                    self.issues.append("东方财富年报批量接口失败；后续单股改用 BaoStock ROE 与新浪年报收入，来源逐行记录。")
+                    self.issues.append("东方财富年报批量接口失败；行情改用 BaoStock，财务仍取单股年报加权 ROE，来源逐行记录。")
                     break
         if self.fallback_market:
             try:
                 industries = self.call("baostock_industry")
+                industry_observed = industries.attrs["fetched_at"]
                 industries["symbol"] = industries["code"].str[3:].map(normalize_symbol)
                 industries = industries.drop_duplicates("symbol").set_index("symbol")
                 stocks["industry"] = stocks["symbol"].map(industries["industry"])
+                stocks["industry_source"] = "baostock:query_stock_industry"
+                stocks["industry_observed_at"] = industry_observed
             except (ValueError, KeyError):
                 self.issues.append("备用行业分类不可用；未知行业计入缺失。")
         annual = pd.concat(annual, ignore_index=True) if annual else pd.DataFrame(columns=sorted(REQUIRED["financials"]))

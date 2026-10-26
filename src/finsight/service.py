@@ -64,6 +64,7 @@ class FinSight:
 
     def _save_bundle(self, bundle) -> dict:
         quality = audit(bundle, self.config)
+        quality["config_id"] = self.config.config_id
         saved = {str(s.as_of) for s in self.store.snapshots() if s.universe_id == bundle.meta.universe_id}
         quality["missing_snapshot_dates"] = missing_sessions(bundle, saved | {str(bundle.meta.as_of)})
         if quality["missing_snapshot_dates"]:
@@ -94,6 +95,11 @@ class FinSight:
             # Different profiles can queue; only one coordinator consumes the root's request budget.
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
+                current = jobs.get(job_id)
+                if current["status"] in {"completed", "partial"} and current["snapshot_id"]:
+                    saved = self.store.root / "snapshots" / current["snapshot_id"] / "quality.json"
+                    quality = json.loads(saved.read_text(encoding="utf-8"))
+                    return {**quality, "job_id": job_id, "screen_run_id": current["progress"].get("screen_run_id")}
                 jobs.check_cancelled(job_id)
                 jobs.update(job_id, status="running", pid=os.getpid(), progress={"phase": "starting"})
                 broker = RequestBroker(self.store, job_id, config["workers"], config["interval"],
@@ -118,7 +124,11 @@ class FinSight:
                                 str(bundle.meta.as_of), bundle.meta.snapshot_id, result.run_id, quality["coverage"]["coverage"]))
                     if api is None:
                         from finsight.scheduler import update_collection_rollout
-                        update_collection_rollout(self.store, bundle.meta.universe_id)
+                        try:
+                            quality["rollout"] = update_collection_rollout(self.store)
+                        except (OSError, ValueError) as exc:
+                            quality["schedule_issue"] = str(exc)
+                            jobs.update(job_id, progress={"schedule_issue": str(exc)})
                 return quality
             except JobCancelled as exc:
                 jobs.update(job_id, status="cancelled", error=str(exc), pid=None, progress={"phase": "cancelled"})
@@ -148,7 +158,10 @@ class FinSight:
         sessions = sorted(full["calendar"]["trade_date"].loc[full["calendar"]["trade_date"] <= str(day)])
         lower = sessions[max(0, len(sessions) - 61)] if sessions else str(day)
         bundle = self.store.load_snapshot(snapshot_id, date_range=(lower, str(day)))
-        audit(bundle, self.config)
+        quality_file = self.store.root / "snapshots" / snapshot_id / "quality.json"
+        saved_quality = json.loads(quality_file.read_text(encoding="utf-8")) if quality_file.exists() else {}
+        if day != bundle.meta.as_of or saved_quality.get("config_id") != self.config.config_id:
+            audit(bundle, self.config)
         result = screen(bundle, self.config, as_of, preview=preview, store=self.store)
         payload = result.model_dump(mode="json")
         self.store.save_run("screen", result.snapshot_id, self.config, payload, result.run_id)

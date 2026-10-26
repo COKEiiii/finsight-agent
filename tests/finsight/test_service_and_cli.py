@@ -21,7 +21,7 @@ def test_end_to_end_offline_workflow(tmp_path):
     assert (bt_folder / "backtest.md").exists()
 
 
-def test_cli_returns_parseable_json_and_useful_errors(tmp_path, capsys):
+def test_cli_returns_parseable_json_and_useful_errors(tmp_path, capsys, monkeypatch):
     root = ["--data-dir", str(tmp_path)]
     assert main(root + ["sync", "--provider", "demo", "--as-of", "2025-02-28", "--start", "2024-01-02"]) == 0
     quality = json.loads(capsys.readouterr().out)
@@ -33,3 +33,11 @@ def test_cli_returns_parseable_json_and_useful_errors(tmp_path, capsys):
     assert len(json.loads(capsys.readouterr().out)) == 1
     assert main(root + ["screen", "--as-of", "2026-01-01"]) == 2
     assert "cutoff" in capsys.readouterr().err
+    from finsight.data.requests import SourceUnavailable
+
+    def failed_sync(*args, **kwargs):
+        raise SourceUnavailable("source unavailable; checkpoints preserved")
+
+    monkeypatch.setattr(FinSight, "sync", failed_sync)
+    assert main(root + ["sync", "--provider", "akshare"]) == 2
+    assert "checkpoints preserved" in capsys.readouterr().err

@@ -33,7 +33,9 @@ class Jobs:
         existing_id = None
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            existing = db.execute("SELECT * FROM jobs WHERE identity=? AND status IN ('queued','running','cancelling')", (identity,)).fetchone()
+            existing = db.execute("SELECT * FROM jobs WHERE identity=? AND status IN "
+                "('queued','running','cancelling','failed','cancelled','partial') "
+                "ORDER BY created_at DESC LIMIT 1", (identity,)).fetchone()
             if existing:
                 existing_id = existing["job_id"]
             else:
@@ -64,7 +66,9 @@ class Jobs:
         with self.store.connect() as db:
             requests = db.execute("SELECT count(*) AS total,sum(status='done') AS completed,sum(status='failed') AS failed,"
                 "sum(attempts) AS network_attempts,sum(cache_hit) AS cache_hits,sum(bytes) AS serialized_bytes,"
-                "sum(http_bytes) AS http_bytes,sum(elapsed) AS request_seconds FROM job_requests WHERE job_id=?", (job_id,)).fetchone()
+                "sum(http_bytes) AS http_bytes,sum(network_requests) AS observed_network_requests,"
+                "sum(error_kind='timeout') AS unmeasured_timeouts,sum(elapsed) AS request_seconds "
+                "FROM job_requests WHERE job_id=?", (job_id,)).fetchone()
         result["requests"] = {key: value or 0 for key, value in dict(requests).items()}
         return result
 
@@ -108,6 +112,14 @@ class Jobs:
         return self.get(job_id)
 
     def launch(self, job_id: str) -> dict:
+        import fcntl
+        folder = self.store.root / "jobs"
+        folder.mkdir(exist_ok=True)
+        with (folder / f".{safe_id(job_id)}.launch.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self._launch_locked(job_id, folder)
+
+    def _launch_locked(self, job_id: str, folder: Path) -> dict:
         row = self.get(job_id)
         if row["status"] == "completed":
             return row
@@ -115,8 +127,6 @@ class Jobs:
             return row
         if row["status"] == "cancelling":
             raise ValueError("job is cancelling; resume after cancellation completes")
-        folder = self.store.root / "jobs"
-        folder.mkdir(exist_ok=True)
         env = dict(os.environ)
         env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
         with (folder / f"{safe_id(job_id)}.log").open("ab") as log:

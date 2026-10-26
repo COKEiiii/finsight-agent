@@ -113,8 +113,8 @@ def main():
         st.warning("历史验证未通过 · 回测结果标记为研究演示。")
     columns = st.columns(4)
     columns[0].metric("数据日期", str(bundle.meta.as_of))
-    columns[1].metric("股票范围", len(set(bundle["universe"]["symbol"])))
-    columns[2].metric("行情记录", f"{len(bundle['prices']):,}")
+    columns[1].metric("股票范围", len(bundle.meta.membership_symbols) if bundle.meta.membership_symbols else len(set(bundle["universe"]["symbol"])))
+    columns[2].metric("最近 61 交易日行情", f"{len(bundle['prices']):,}")
     columns[3].metric("发布状态", {"published": "已发布", "preview": "仅预览", "blocked": "阻止发布"}.get(
         quality.get("publication_status"), "可选股" if quality["publishable"] else "数据待修复"))
     data_tab, rank_tab, research_tab, portfolio_tab = st.tabs(["数据状态", "候选排行榜", "研究卡", "组合与绩效"])

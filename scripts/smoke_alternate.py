@@ -24,7 +24,7 @@ def main():
             calendar = pd.DataFrame({"trade_date": pd.bdate_range("2025-01-01", "2026-12-31").strftime("%Y-%m-%d")})
             for code in ("600036", "000001"):
                 prices, vals, _ = collector._bars_baostock(code, lower, day)
-                fin = collector.financial_history_fallback(code + (".SH" if code.startswith("6") else ".SZ"),
+                fin = collector.financial_history(code + (".SH" if code.startswith("6") else ".SZ"),
                     date.fromisoformat(lower), date.fromisoformat(day), calendar)
                 print(code, "bars", len(prices), "valuations", len(vals), "annual", len(fin),
                     "latest", prices["trade_date"].max(), "roe", fin["roe"].tail(1).tolist(),

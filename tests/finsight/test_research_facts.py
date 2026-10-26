@@ -4,6 +4,7 @@ import pytest
 
 from finsight.evaluation import build_cases, evaluate_run
 from finsight.research import demo_content, evidence_for, render_card, research_candidate, validate_content
+from finsight.research_facts import render_content
 from finsight.service import FinSight
 
 
@@ -47,7 +48,8 @@ def test_metric_and_unit_mismatch_rejected_even_if_number_exists_elsewhere(tmp_p
     with pytest.raises(ValueError, match="field/evidence mismatch: roe"):
         validate_content(payload, facts)
     payload["reasons"][0] = {"text": "净资产收益率为百分之二十。", "evidence_ids": ["financials.roe"]}
-    assert validate_content(payload, facts)
+    with pytest.raises(ValueError, match="narrative contains a number"):
+        validate_content(payload, facts)
     payload["reasons"][0]["text"] = "净资产收益率为20元。"
     with pytest.raises(ValueError, match="narrative contains a number"):
         validate_content(payload, facts)
@@ -60,6 +62,8 @@ def test_unsupported_valuation_and_mismatched_research_binding(tmp_path):
     with pytest.raises(ValueError, match="无法判断"):
         validate_content(payload, facts)
     good = demo_content(candidate, facts).model_dump()
+    good["information_gaps"].append("缺少行业平均估值数据。")
+    assert validate_content(good, facts)
     adapter = Answers([good])
     first = research_candidate(result, candidate, service.store, adapter)
     assert first.status == "completed"
@@ -87,3 +91,35 @@ def test_thirty_case_suite_requires_real_candidates_and_tracks_synthetic_changes
     assert sum(case["synthetic_modification"] for case in cases) == 20
     report = evaluate_run(service.store, result.run_id, allow_demo=True)
     assert report["case_count"] == 30 and report["models"] == {}
+
+
+def test_program_fills_only_the_matching_cited_field_and_unit(tmp_path):
+    _, _, candidate, facts = ready(tmp_path)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["reasons"][0] = {"text": "净资产收益率为{{financials.roe}}。", "evidence_ids": ["financials.roe"]}
+    content = validate_content(payload, facts)
+    rendered = render_content(content, facts)
+    assert "{{" not in rendered.reasons[0].text and "%" in rendered.reasons[0].text
+    payload["reasons"][0]["text"] = "净资产收益率为{{financials.roe}}%。"
+    assert render_content(validate_content(payload, facts), facts).reasons[0].text.count("%") == 1
+    payload["reasons"][0]["text"] = "净资产收益率为{{valuation.pb}}。"
+    with pytest.raises(ValueError, match="matching field"):
+        validate_content(payload, facts)
+    payload["reasons"][0] = {"text": "净资产收益率为{{valuation.pb}}。", "evidence_ids": ["valuation.pb"]}
+    with pytest.raises(ValueError, match="field/evidence mismatch"):
+        validate_content(payload, facts)
+    payload["reasons"][0] = {"text": "净资产收益率为{{financials.roe}}元。", "evidence_ids": ["financials.roe"]}
+    with pytest.raises(ValueError, match="repeated unit"):
+        validate_content(payload, facts)
+
+
+def test_empty_quantities_and_unprovided_market_cap_are_not_valid_reports(tmp_path):
+    _, _, candidate, facts = ready(tmp_path)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["reasons"][0] = {"text": "策略排名第 名。", "evidence_ids": ["selection.rank"]}
+    with pytest.raises(ValueError, match="unfilled numeric"):
+        validate_content(payload, facts)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["summary"] = "分析公司市值表现。"
+    with pytest.raises(ValueError, match="not in this snapshot"):
+        validate_content(payload, facts)

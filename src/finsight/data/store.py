@@ -7,7 +7,6 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
-import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +35,8 @@ def code_version() -> str:
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=package, stderr=subprocess.DEVNULL).decode().strip()
         return head + "+runtime-" + digest
     except (OSError, subprocess.CalledProcessError):
-        return "finsight-0.1.0+runtime-" + digest
+        from finsight import __version__
+        return f"finsight-{__version__}+runtime-" + digest
 
 
 @dataclass
@@ -91,12 +91,14 @@ class Store:
                     screen_run_id TEXT NOT NULL, coverage REAL NOT NULL,
                     PRIMARY KEY(universe_id,trade_date));
             """)
+            db.execute("BEGIN IMMEDIATE")
             columns = {row["name"] for row in db.execute("PRAGMA table_info(job_requests)")}
             for name, definition in {"loaded_at": "TEXT", "http_bytes": "INTEGER NOT NULL DEFAULT 0",
-                                     "error_detail": "TEXT"}.items():
+                                     "error_detail": "TEXT", "network_requests": "INTEGER NOT NULL DEFAULT 0"}.items():
                 if name not in columns:
                     db.execute(f"ALTER TABLE job_requests ADD COLUMN {name} {definition}")
             db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (3)")
+            db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (4)")
 
     @contextmanager
     def connect(self):
@@ -244,13 +246,8 @@ class Store:
         return json.loads(row["payload"]) if row else None
 
     def reserve_request(self, interval: float) -> float:
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT value FROM collector_control WHERE key='next_request'").fetchone()
-            now = time.time()
-            start = max(now, float(row["value"]) if row else now)
-            db.execute("INSERT OR REPLACE INTO collector_control VALUES ('next_request',?)", (str(start + interval),))
-        return max(0, start - now)
+        from finsight.data.rate import reserve
+        return reserve(str(self.root / "finsight.sqlite"), interval)
 
     def save_run(self, kind: str, snapshot_id: str, config: StrategyConfig, payload: dict,
                  run_id: str | None = None) -> str:
