@@ -1,8 +1,16 @@
 import json
 
 import httpx
+import pytest
 
-from finsight.research import ChatAdapter, demo_content, research_candidate
+from finsight.research import (
+    ChatAdapter,
+    demo_content,
+    evidence_for,
+    parse_json_content,
+    research_candidate,
+    validate_content,
+)
 from finsight.screening import screen
 
 
@@ -35,7 +43,9 @@ def test_multiple_tools_paired_in_one_assistant_turn_and_cached(bundle, store):
     second_turn = adapter.messages[1]
     assert [m["tool_call_id"] for m in second_turn if m["role"] == "tool"] == ["financials", "market"]
     assert next(m for m in second_turn if m["role"] == "assistant")["tool_calls"] == calls
-    assert research_candidate(result, candidate, store, adapter).cache_hit
+    cached = research_candidate(result, candidate, store, adapter)
+    assert cached.cache_hit and cached.llm_calls == 0
+    assert cached.generation_usage["llm_calls"] == 2
     assert len(adapter.messages) == 2
 
 
@@ -97,3 +107,37 @@ def test_offline_template_is_explicitly_labeled(bundle, store):
     result = screen(bundle)
     card = research_candidate(result, result.candidates[0], store, demo=True)
     assert card.status == "demo" and card.llm_calls == 0
+
+
+def test_local_markdown_json_wrapper_is_accepted_but_not_repaired():
+    assert parse_json_content('```json\n{"value": 1}\n```') == {"value": 1}
+    with pytest.raises(ValueError):
+        parse_json_content('Here is JSON: {"value": 1}')
+
+
+def test_model_cannot_add_ranking_override(bundle, store):
+    result = screen(bundle)
+    bad = demo_content(result.candidates[0]).model_dump()
+    bad["score"] = 100
+    adapter = FakeAdapter([response(bad)] * 3)
+    assert research_candidate(result, result.candidates[0], store, adapter).status == "failed"
+
+
+def test_fabricated_financial_number_rejected_and_supported_rounding_accepted(bundle):
+    result = screen(bundle)
+    candidate = result.candidates[0]
+    data = demo_content(candidate).model_dump()
+    data["reasons"][0] = {"text": "净资产收益率为9999%。", "evidence_ids": ["financials"]}
+    evidence = evidence_for(result, candidate)
+    with pytest.raises(ValueError, match="number absent"):
+        validate_content(data, evidence)
+    data["reasons"][0]["text"] = f"净资产收益率为{candidate['roe']:.2f}%。"
+    assert validate_content(data, evidence)
+
+
+def test_default_financial_model_is_independent_of_learning_settings(monkeypatch):
+    monkeypatch.delenv("FINSIGHT_MODEL", raising=False)
+    monkeypatch.setenv("LLM_MODEL", "unavailable-learning-model")
+    adapter = ChatAdapter()
+    assert adapter.provider == "ollama" and adapter.model == "qwen3.5:4b"
+    adapter.close()

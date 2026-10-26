@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 from finsight.config import load_strategy
-from finsight.portfolio import import_journal, journal_entries, reconcile
+from finsight.portfolio import import_journal, journal_entries
 from finsight.service import FinSight
 
 
@@ -66,6 +66,8 @@ def parser() -> argparse.ArgumentParser:
     demo = commands.add_parser("demo", help="offline end-to-end demonstration (no model requests)")
     demo.add_argument("--as-of", type=date.fromisoformat, default=date(2025, 12, 31))
     commands.add_parser("dashboard", help="launch the local Streamlit interface")
+    schedule = commands.add_parser("schedule", help="macOS daily data collector; no model calls")
+    schedule.add_argument("action", choices=["install", "status"])
     return p
 
 
@@ -75,6 +77,8 @@ def check_daily(service: FinSight, universe: str, now: datetime | None = None) -
     cutoff = now.date() if now.hour >= 18 else now.date() - timedelta(days=1)
     provider = AKShareProvider(service.store.root)
     calendar = provider.calendar()
+    if calendar.empty or calendar["trade_date"].max() < str(cutoff):
+        raise ValueError("trading calendar does not cover the collection cutoff")
     sessions = calendar[calendar["trade_date"] <= str(cutoff)]
     if sessions.empty:
         raise ValueError("no completed sessions in exchange calendar")
@@ -83,6 +87,9 @@ def check_daily(service: FinSight, universe: str, now: datetime | None = None) -
     saved = [s for s in service.store.snapshots() if s.source == "akshare" and s.universe_scope == scope]
     if any(s.as_of == day and s.publishable for s in saved):
         return {"status": "up_to_date", "as_of": str(day)}
+    failed = next((s for s in saved if s.as_of == day), None)
+    if failed and (now - failed.captured_at).total_seconds() < 3600:
+        return {"status": "waiting_retry", "as_of": str(day), "note": "last failed batch is retained; retry cooldown is one hour"}
     return service.sync("akshare", day, mainboard=universe == "mainboard")
 
 
@@ -121,8 +128,7 @@ def main(argv: list[str] | None = None) -> int:
                 output([e.model_dump(mode="json") for e in journal_entries(service.store, args.account)])
             else:
                 actual = json.loads(args.actual_holdings.read_text()) if args.actual_holdings else None
-                output(reconcile(service.store, service.store.load_snapshot(args.snapshot), args.capital,
-                                 args.account, args.actual_cash, actual))
+                output(service.portfolio_report(args.snapshot, args.capital, args.account, args.actual_cash, actual))
         elif args.command == "watch":
             import time
             if args.poll_seconds < 10:
@@ -151,6 +157,9 @@ def main(argv: list[str] | None = None) -> int:
             path = Path(__file__).with_name("dashboard.py")
             return subprocess.call([sys.executable, "-m", "streamlit", "run", str(path),
                                     "--server.address", "127.0.0.1", "--", "--data-dir", str(service.store.root)])
+        elif args.command == "schedule":
+            from finsight.scheduler import install, status
+            output(install(service.store.root) if args.action == "install" else status())
         return 0
     except (ValueError, OSError, KeyError) as exc:
         print(f"FinSight: {exc}", file=sys.stderr)

@@ -66,6 +66,7 @@ class MarketSnapshot(StrictModel):
     quality_issues: list[str] = Field(default_factory=list)
     research_checks: dict[str, bool] = Field(default_factory=lambda: dict.fromkeys(RESEARCH_CHECKS, False))
     table_hashes: dict[str, str] = Field(default_factory=dict)
+    collector_version: str = "unknown"
 
     @property
     def research_eligible(self) -> bool:
@@ -116,6 +117,7 @@ class ResearchCard(StrictModel):
     input_tokens: int = 0
     output_tokens: int = 0
     cache_hit: bool = False
+    generation_usage: dict[str, int] = Field(default_factory=dict)
 
 
 class TradeJournalEntry(StrictModel):

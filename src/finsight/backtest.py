@@ -61,6 +61,8 @@ class Ledger:
                 raise ValueError("T+1 violation or insufficient holding")
             if quantity % 100 and quantity != self.quantity(symbol):
                 raise ValueError("odd-lot sale must liquidate the holding")
+            if self.cash + quantity * price - cost < -1e-7:
+                raise ValueError("insufficient cash to cover sale fees")
             remaining = quantity
             for lot in self.lots.get(symbol, []):
                 if lot.acquired_on < day:
@@ -80,7 +82,7 @@ class Ledger:
             if key in self.applied_actions:
                 continue
             ratio, dividend = float(action["split_ratio"]), float(action["cash_per_share"])
-            if ratio <= 0 or dividend < 0 or action["pay_date"] < day:
+            if not math.isfinite(ratio) or not math.isfinite(dividend) or ratio <= 0 or dividend < 0 or action["pay_date"] < day:
                 raise ValueError("invalid corporate action")
             symbol = action["symbol"]
             entitled = self.quantity(symbol) * dividend
@@ -97,11 +99,21 @@ class Ledger:
         self.pending_cash = [(d, a) for d, a in self.pending_cash if d > day]
 
 
+FEE_RULES = [
+    {"effective_on": "2022-01-01", "transfer_rate": .00002, "sell_stamp_rate": .001},
+    {"effective_on": "2022-04-29", "transfer_rate": .00001, "sell_stamp_rate": .001},
+    {"effective_on": "2023-08-28", "transfer_rate": .00001, "sell_stamp_rate": .0005},
+]
+
+
 def trading_cost(day: str, action: str, gross: float) -> float:
     # Research assumptions. Commission includes brokerage/exchange handling charges.
     commission = max(5.0, gross * .0003)
-    transfer = gross * (.00002 if day < "2022-04-29" else .00001)
-    stamp = gross * (.001 if day < "2023-08-28" else .0005) if action == "sell" else 0
+    rule = next((rule for rule in reversed(FEE_RULES) if rule["effective_on"] <= day), None)
+    if rule is None:
+        raise ValueError("cost schedule has no coverage before 2022")
+    transfer = gross * rule["transfer_rate"]
+    stamp = gross * rule["sell_stamp_rate"] if action == "sell" else 0
     return round(commission + transfer + stamp, 2)
 
 
@@ -191,6 +203,10 @@ def simulate(bundle: SnapshotBundle, config: StrategyConfig, start: date, end: d
         if previous_day[:7] != days[0][:7]:
             pending = build_orders(previous_day, capital)
     for day in days:
+        # Preserve the economic value of stale marks across an ex-date.
+        for action in bundle["actions"][bundle["actions"]["ex_date"] == day].to_dict("records"):
+            if action["symbol"] in marks:
+                marks[action["symbol"]] = (marks[action["symbol"]] - action["cash_per_share"]) / action["split_ratio"]
         ledger.apply_actions(bundle["actions"], day)
         daily = bars.get(day, {})
         # Opening marks, not closing marks, are used for execution-time exposure checks.
@@ -264,10 +280,14 @@ def run_backtest(bundle: SnapshotBundle, config: StrategyConfig, start: date, en
         strategy["metrics"]["cumulative_return"] - (final_bm / capital - 1) if final_bm else None)
     passed = bundle.meta.research_eligible and not strategy["issues"] and not baseline["issues"] and all(
         p["benchmark_nav"] is not None for p in comparison)
+    if any(t["reason"] == "unverified_price_limit" for r in (strategy, baseline) for t in r["trades"]):
+        passed = False
     return {"snapshot_id": bundle.meta.snapshot_id, "start": str(start), "end": str(end),
             "research_eligible": passed, "synthetic": bundle.meta.synthetic,
             "status": "historical_checks_passed" if passed else "研究演示：历史验证未通过",
             "strategy": strategy, "momentum_baseline": baseline, "benchmark": comparison,
+            "cost_model": {"commission_rate": .0003, "minimum_commission": 5,
+                           "slippage_bps": 5, "effective_date_rules": FEE_RULES},
             "assumptions": ["日频开盘成交近似，不代表真实订单簿成交；未知涨跌停价不成交。",
                 "分红按税前现金及给定支付日记账；不模拟个人红利税。配股等未知公司行动阻断正式验证。",
                 "沪深300为价格指数，不含分红；同时展示80%指数与20%现金的持有对照。",

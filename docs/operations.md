@@ -11,13 +11,15 @@ source .venv/bin/activate
 finsight watch
 ```
 
-For macOS launchd, customize the repository and executable paths in `scripts/com.finsight.daily.plist.example`, copy it into `~/Library/LaunchAgents/com.finsight.daily.plist`, and load it:
+For macOS, use `finsight schedule install` to install and start the collector, and `finsight schedule status` to inspect it. The installer preserves an existing schedule if startup fails, and refuses to overwrite a schedule for another checkout.
+
+For manual macOS launchd setup, customize the repository and executable paths in `scripts/com.finsight.daily.plist.example`, copy it into `~/Library/LaunchAgents/com.finsight.daily.plist`, and load it:
 
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.finsight.daily.plist
 ```
 
-Remove the job using `launchctl bootout gui/$(id -u)/com.finsight.daily`. The supplied job runs at login and daily at 18:05; the timestamp is local system time, so use it on a machine set to Singapore/China time. Runtime checks use Asia/Shanghai explicitly. This release provides the scheduler command and example; installing the persistent system job is a separate local setup step.
+Remove the job using `launchctl bootout gui/$(id -u)/com.finsight.daily`. The supplied job runs at login and daily at 18:05; the timestamp is local system time, so use it on a machine set to Singapore/China time. Runtime checks use Asia/Shanghai explicitly. Installation stores the runtime package path in PYTHONPATH. Source/editable installs follow source updates; reinstall a non-editable package after changing source. No API keys are written into the plist.
 
 Linux/macOS cron alternative (replace paths):
 

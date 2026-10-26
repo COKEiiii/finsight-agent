@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import date
 
+import numpy as np
+import pandas as pd
+
 from finsight.data.store import TABLES, SnapshotBundle
 from finsight.models import RESEARCH_CHECKS
 
@@ -35,6 +38,10 @@ def audit(bundle: SnapshotBundle) -> dict:
             fatal.append("no prices for snapshot date; stale batch")
         if day not in set(bundle["valuations"]["trade_date"].astype(str)):
             fatal.append("no valuations for snapshot date; stale batch")
+        if not (bundle["universe"]["known_on"] <= day).any():
+            fatal.append("no stock state known at cutoff; first capture cannot be backdated to the prior session")
+        if bundle["universe"]["listed_on"].isna().all():
+            fatal.append("all listing dates missing; metadata batch unavailable")
         for key in ("prices", "valuations", "benchmark"):
             if (bundle[key]["trade_date"].astype(str) > day).any():
                 fatal.append(f"{key}: observations after snapshot date")
@@ -44,11 +51,18 @@ def audit(bundle: SnapshotBundle) -> dict:
         if missing:
             issues.append(f"{len(missing)} symbols have no bar on the snapshot date; excluded")
         bad = bundle["prices"]
+        numeric = bad[["open", "high", "low", "close", "amount", "volume"]].apply(pd.to_numeric, errors="coerce")
+        if not np.isfinite(numeric).all().all():
+            fatal.append("nonfinite raw price/volume observations")
+        bad = numeric
         bad = bad[(bad["close"] <= 0) | (bad["open"] <= 0) | (bad["amount"] < 0) |
+                  (bad["volume"] < 0) |
                   (bad["high"] < bad[["open", "close"]].max(axis=1)) |
                   (bad["low"] > bad[["open", "close"]].min(axis=1))]
         if not bad.empty:
             fatal.append(f"{len(bad)} invalid OHLC/amount observations")
+        if bundle["actions"].duplicated(["symbol", "ex_date"]).any():
+            fatal.append("duplicate corporate action keys; combine cash/split terms into one event")
     bundle.meta.publishable = bundle.meta.publishable and not fatal
     bundle.meta.quality_issues = list(dict.fromkeys(issues + fatal))
     return {

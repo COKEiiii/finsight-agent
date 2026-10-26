@@ -14,8 +14,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from finsight.data.quality import audit
-from finsight.models import ScreeningResult, TradeJournalEntry
-from finsight.portfolio import import_journal, journal_entries, portfolio_plan, reconcile
+from finsight.models import ScreeningResult, StrategyConfig, TradeJournalEntry
+from finsight.portfolio import import_journal, journal_entries, portfolio_plan
 from finsight.research import ChatAdapter, render_card
 from finsight.service import FinSight
 
@@ -37,16 +37,18 @@ def main():
     with st.sidebar:
         st.header("研究工作区")
         st.caption("本地单用户 · strategy_v0.1")
-        if st.button("创建离线演示数据", use_container_width=True):
+        if st.button("创建离线演示数据", width="stretch"):
             with st.spinner("准备合成样例…"):
-                service.sync("demo")
+                created = service.sync("demo")
+            st.session_state["snapshot_choice"] = created["snapshot_id"]
             st.rerun()
         st.caption("演示数据使用虚构公司和工作日日历。")
         universe = st.selectbox("真实数据范围", ["20 只样本", "沪深主板"])
-        if st.button("更新 AKShare 数据", use_container_width=True):
+        if st.button("更新 AKShare 数据", width="stretch"):
             try:
                 with st.spinner("采集、校验并保存快照…"):
                     quality = service.sync("akshare", mainboard=universe == "沪深主板")
+                st.session_state["snapshot_choice"] = quality["snapshot_id"]
                 if quality["publishable"]:
                     st.success("快照已保存")
                 else:
@@ -60,7 +62,7 @@ def main():
             st.stop()
         by_id = {s.snapshot_id: s for s in snapshots}
         snapshot_id = st.selectbox("数据快照", list(by_id), format_func=lambda s: (
-            f"{'演示' if by_id[s].synthetic else 'AKShare'} · {by_id[s].as_of} · {s[-6:]}"))
+            f"{'演示' if by_id[s].synthetic else 'AKShare'} · {by_id[s].as_of} · {s[-6:]}"), key="snapshot_choice")
         st.caption(f"快照：{snapshot_id}")
     bundle = service.store.load_snapshot(snapshot_id)
     quality = audit(bundle)
@@ -78,11 +80,12 @@ def main():
     selected = None
     if screen_runs:
         selected = ScreeningResult.model_validate_json(screen_runs[0]["payload"])
+        service.config = StrategyConfig.model_validate_json(screen_runs[0]["config"])
     with data_tab:
         st.subheader("数据覆盖与可追溯性")
         st.write(bundle.meta.universe_scope)
         st.dataframe(pd.DataFrame([{"数据表": k, "记录数": v} for k, v in quality["table_rows"].items()]),
-                     hide_index=True, use_container_width=True)
+                     hide_index=True, width="stretch")
         for issue in quality["issues"]:
             st.write("• " + issue)
         st.write("尚未通过的历史核验项：", ", ".join(quality["missing_research_checks"]) or "无")
@@ -105,7 +108,7 @@ def main():
             if selected.candidates:
                 table = pd.DataFrame(selected.candidates)
                 st.dataframe(table[["rank", "symbol", "name", "industry", "score", "roe", "revenue_growth",
-                                    "momentum_60", "ma_ratio", "pe_ttm", "pb"]], hide_index=True, use_container_width=True)
+                                    "momentum_60", "ma_ratio", "pe_ttm", "pb"]], hide_index=True, width="stretch")
                 st.bar_chart(table.set_index("symbol")[["score"]])
                 st.download_button("下载候选股 CSV", table.to_csv(index=False).encode("utf-8-sig"),
                                    file_name="candidates.csv", mime="text/csv")
@@ -114,7 +117,7 @@ def main():
             st.download_button("下载完整选股记录", selected.model_dump_json(indent=2),
                                file_name="screening.json", mime="application/json")
             with st.expander(f"剔除原因（{len(selected.exclusions)} 只）"):
-                st.dataframe(pd.DataFrame(selected.exclusions), hide_index=True, use_container_width=True)
+                st.dataframe(pd.DataFrame(selected.exclusions), hide_index=True, width="stretch")
         else:
             st.info("运行选股后，在此查看候选股与各因子得分。")
     with research_tab:
@@ -185,8 +188,9 @@ def main():
                 st.error(str(exc))
         if selected and selected.candidates:
             with st.form("manual_trade"):
-                symbol = st.selectbox("记录股票", [c["symbol"] for c in selected.candidates])
-                trading_date = st.date_input("记录日期", value=bundle.meta.as_of)
+                symbol = st.selectbox("记录股票", sorted(set(bundle["universe"]["symbol"])))
+                next_session = next((d for d in bundle["calendar"]["trade_date"] if d > str(bundle.meta.as_of)), None)
+                trading_date = st.date_input("记录日期", value=date.fromisoformat(next_session) if next_session else bundle.meta.as_of)
                 action = st.selectbox("方向", ["buy", "sell"])
                 status = st.selectbox("事件状态", ["submitted", "filled", "partial", "cancelled", "rejected", "planned"])
                 quantity = st.number_input("本次数量", min_value=0, value=100, step=100)
@@ -218,8 +222,10 @@ def main():
                                file_name="journal.csv", mime="text/csv")
         if st.button("生成持仓与周度检查报告"):
             try:
-                report = reconcile(service.store, bundle, capital, account)
+                report = service.portfolio_report(snapshot_id, capital, account)
                 st.json(report)
+                if report["performance"]["curve"]:
+                    st.line_chart(pd.DataFrame(report["performance"]["curve"]).set_index("trade_date")[["nav"]])
                 st.download_button("下载检查报告", json.dumps(report, ensure_ascii=False, indent=2), file_name="portfolio_review.json")
             except ValueError as exc:
                 st.error(str(exc))

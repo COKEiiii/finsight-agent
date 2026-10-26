@@ -80,7 +80,9 @@ def journal_entries(store: Store, account_id: str = "paper") -> list[TradeJourna
 
 
 def reconcile(store: Store, bundle: SnapshotBundle, initial_cash: float, account_id: str = "paper",
-              actual_cash: float | None = None, actual_holdings: dict[str, int] | None = None) -> dict:
+              actual_cash: float | None = None, actual_holdings: dict[str, int] | None = None,
+              config: StrategyConfig | None = None) -> dict:
+    config = config or StrategyConfig()
     if not math.isfinite(initial_cash) or initial_cash <= 0:
         raise ValueError("initial cash must be positive and finite")
     from finsight.backtest import Ledger
@@ -107,6 +109,12 @@ def reconcile(store: Store, bundle: SnapshotBundle, initial_cash: float, account
     prices = bundle["prices"]
     marks = prices[prices["trade_date"] <= str(bundle.meta.as_of)].sort_values("trade_date").groupby("symbol").tail(1)
     mark_map = dict(zip(marks["symbol"], marks["close"]))
+    for quote in marks.to_dict("records"):
+        later = bundle["actions"][(bundle["actions"]["symbol"] == quote["symbol"]) &
+                                   (bundle["actions"]["ex_date"] > quote["trade_date"]) &
+                                   (bundle["actions"]["ex_date"] <= str(bundle.meta.as_of))].sort_values("ex_date")
+        for action in later.to_dict("records"):
+            mark_map[quote["symbol"]] = (mark_map[quote["symbol"]] - action["cash_per_share"]) / action["split_ratio"]
     for symbol in ledger.symbols:
         if symbol not in mark_map:
             raise ValueError(f"no mark for held symbol {symbol}")
@@ -116,16 +124,22 @@ def reconcile(store: Store, bundle: SnapshotBundle, initial_cash: float, account
     holdings = {s: ledger.quantity(s) for s in sorted(ledger.symbols)}
     weights = {s: holdings[s] * float(mark_map[s]) / nav for s in holdings}
     for s, weight in weights.items():
-        if weight > .15:
-            flags.append(f"{s}: single stock weight above 15%")
-    if sum(weights.values()) > .8:
-        flags.append("equity weight above 80%")
+        if weight > config.max_stock_weight:
+            flags.append(f"{s}: single stock weight above {config.max_stock_weight:.0%}")
+    if sum(weights.values()) > config.max_equity_weight:
+        flags.append(f"equity weight above {config.max_equity_weight:.0%}")
     industry_map = bundle["universe"].sort_values("known_on").drop_duplicates("symbol", keep="last").set_index("symbol")["industry"].to_dict()
     industry_weights = defaultdict(float)
     for symbol, weight in weights.items():
         industry_weights[industry_map.get(symbol, "unknown")] += weight
+    if len(holdings) > config.max_holdings:
+        flags.append("holding count exceeds strategy limit")
+    for industry, count in Counter(industry_map.get(s, "unknown") for s in holdings).items():
+        if count > config.max_industry_names:
+            flags.append(f"{industry}: industry holding count exceeds strategy limit")
     difference = None if actual_holdings is None else {s: actual_holdings.get(s, 0) - holdings.get(s, 0)
         for s in set(actual_holdings) | set(holdings) if actual_holdings.get(s, 0) != holdings.get(s, 0)}
+    performance = journal_performance(store, bundle, initial_cash, account_id)
     return {"account_id": account_id, "as_of": str(bundle.meta.as_of), "cash": ledger.cash,
             "receivables": ledger.receivables, "nav": nav, "holdings": holdings, "weights": weights,
             "industry_weights": dict(industry_weights), "return": nav / initial_cash - 1,
@@ -133,7 +147,53 @@ def reconcile(store: Store, bundle: SnapshotBundle, initial_cash: float, account
             "actual_holdings_difference": difference, "flags": flags,
             "unexecuted_events": sum(e.status not in {"filled", "partial"} for e in events),
             "future_events": sum(e.trade_date > bundle.meta.as_of for e in events),
-            "executions": execution_rows, "corporate_actions_verified": bundle.meta.research_checks.get("corporate_actions", False)}
+            "executions": execution_rows, "performance": performance,
+            "corporate_actions_verified": bundle.meta.research_checks.get("corporate_actions", False)}
+
+
+def journal_performance(store: Store, bundle: SnapshotBundle, initial_cash: float, account_id: str) -> dict:
+    from finsight.backtest import Ledger, metrics
+    events = [e for e in journal_entries(store, account_id)
+              if e.status in {"filled", "partial"} and e.trade_date <= bundle.meta.as_of]
+    if not events:
+        return {"curve": [], "weekly_return": None, "metrics": None,
+                "note": "尚无截至快照日期的实际模拟成交。"}
+    first = str(min(e.trade_date for e in events))
+    calendar = bundle["calendar"]["trade_date"].astype(str)
+    days = sorted(calendar[(calendar >= first) & (calendar <= str(bundle.meta.as_of))])
+    if any(str(e.trade_date) not in days for e in events):
+        raise ValueError("journal executions are outside the saved trading calendar")
+    event_groups = defaultdict(list)
+    for entry in events:
+        event_groups[str(entry.trade_date)].append(entry)
+    bars = {day: dict(zip(frame["symbol"], frame["close"])) for day, frame in bundle["prices"].groupby("trade_date")}
+    ledger, marks, curve, costs, turnover, flags = Ledger(initial_cash), {}, [], 0.0, 0.0, []
+    for day in days:
+        for action in bundle["actions"][bundle["actions"]["ex_date"] == day].to_dict("records"):
+            if action["symbol"] in marks:
+                marks[action["symbol"]] = (marks[action["symbol"]] - action["cash_per_share"]) / action["split_ratio"]
+        ledger.apply_actions(bundle["actions"], day)
+        for entry in event_groups[day]:
+            ledger.record_fill(entry.symbol, entry.action, entry.quantity, entry.executed_price, entry.transaction_cost, day)
+            costs += entry.transaction_cost
+            turnover += entry.quantity * entry.executed_price / initial_cash
+        daily = bars.get(day, {})
+        marks.update(daily)
+        for symbol in ledger.symbols:
+            if symbol not in marks:
+                raise ValueError(f"journal holding has no price: {symbol} on {day}")
+            if symbol not in daily:
+                flags.append(f"{day}:{symbol}: stale mark")
+        curve.append({"trade_date": day, "nav": ledger.nav(marks), "cash": ledger.cash,
+                      "receivables": ledger.receivables})
+    weekly_reference = curve[-6]["nav"] if len(curve) >= 6 else None
+    benchmark = bundle["benchmark"].set_index("trade_date")["close"].sort_index()
+    prior = benchmark[benchmark.index < first]
+    bm_return = (float(benchmark.iloc[-1] / prior.iloc[-1] - 1) if len(prior) else None)
+    return {"curve": curve, "weekly_return": curve[-1]["nav"] / weekly_reference - 1 if weekly_reference else None,
+            "metrics": metrics([r["nav"] for r in curve], initial_cash, costs, turnover),
+            "benchmark_return_since_first_execution": bm_return, "flags": flags,
+            "note": "周收益使用最近5个交易日净值变化；不足6个净值观测时不计算。实际费用来自交易日志。"}
 
 
 def journal_template(run: ScreeningResult) -> str:

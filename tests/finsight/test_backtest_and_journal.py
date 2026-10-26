@@ -124,3 +124,12 @@ def test_reconcile_uses_actual_fees_not_research_cost(bundle, store, config):
     report = reconcile(store, bundle, 100000, actual_cash=98988, actual_holdings={"600000.SH": 100})
     assert report["cash"] == 98988 and report["actual_cash_difference"] == 0
     assert report["actual_holdings_difference"] == {}
+    assert report["performance"]["curve"][-1]["nav"] == pytest.approx(report["nav"])
+
+
+def test_large_sale_fee_failure_does_not_mutate_lots():
+    ledger = Ledger(1000)
+    ledger.record_fill("600000.SH", "buy", 100, 10, 0, "2025-01-02")
+    with pytest.raises(ValueError, match="sale fees"):
+        ledger.record_fill("600000.SH", "sell", 100, .01, 5, "2025-01-03")
+    assert ledger.quantity("600000.SH") == 100 and ledger.cash == 0

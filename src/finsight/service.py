@@ -12,7 +12,7 @@ from finsight.data.demo import make_demo
 from finsight.data.quality import audit, missing_sessions
 from finsight.data.store import Store, code_version
 from finsight.models import ResearchCard, ScreeningResult, StrategyConfig
-from finsight.portfolio import journal_template, portfolio_plan
+from finsight.portfolio import journal_template, portfolio_plan, reconcile
 from finsight.research import ChatAdapter, render_card, research_candidate
 from finsight.screening import screen
 
@@ -36,7 +36,8 @@ class FinSight:
                 old = self.store.load_snapshot(previous.snapshot_id)
                 states = pd.concat([old["universe"], bundle["universe"]], ignore_index=True)
                 bundle.tables["universe"] = states.drop_duplicates(["symbol", "known_on"], keep="last")
-                fin = pd.concat([old["financials"], bundle["financials"]], ignore_index=True)
+                parts = [frame for frame in (old["financials"], bundle["financials"]) if not frame.empty]
+                fin = pd.concat(parts, ignore_index=True) if parts else bundle["financials"].copy()
                 identity = ["symbol", "report_period", "announcement_date", "roe", "revenue_growth"]
                 bundle.tables["financials"] = fin.sort_values("available_on").drop_duplicates(identity, keep="first")
         else:
@@ -111,4 +112,23 @@ class FinSight:
         (folder / "backtest.md").write_text("# FinSight 回测\n\n" + payload["status"] + "\n\n```json\n" +
             json.dumps(payload["strategy"]["metrics"], ensure_ascii=False, indent=2) + "\n```\n\n" +
             "\n".join("- " + s for s in payload["assumptions"]), encoding="utf-8")
+        return payload
+
+    def portfolio_report(self, snapshot_id: str | None = None, capital: float = 100_000,
+                         account: str = "paper", actual_cash: float | None = None,
+                         actual_holdings: dict[str, int] | None = None) -> dict:
+        bundle = self.store.load_snapshot(snapshot_id)
+        payload = reconcile(self.store, bundle, capital, account, actual_cash, actual_holdings, self.config)
+        payload.update(snapshot_id=bundle.meta.snapshot_id, code_version=code_version())
+        run_id = self.store.save_run("portfolio_report", bundle.meta.snapshot_id, self.config, payload)
+        payload["run_id"] = run_id
+        folder = self.store.artifact_dir(run_id)
+        (folder / "portfolio_review.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        pd.DataFrame(payload["performance"]["curve"]).to_csv(folder / "portfolio_nav.csv", index=False, encoding="utf-8-sig")
+        (folder / "weekly_review.md").write_text(
+            "# FinSight 模拟组合复盘\n\n" + f"账户：{account} · 截止：{bundle.meta.as_of}\n\n" +
+            "```json\n" + json.dumps({"cash": payload["cash"], "nav": payload["nav"],
+                "weekly_return": payload["performance"].get("weekly_return"), "flags": payload["flags"],
+                "metrics": payload["performance"].get("metrics")}, ensure_ascii=False, indent=2) + "\n```\n\n" +
+            "请逐项复盘：策略表现、数据缺口、实际执行、人为偏离、市场与行业因素。\n", encoding="utf-8")
         return payload

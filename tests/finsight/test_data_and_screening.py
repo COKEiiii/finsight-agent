@@ -114,3 +114,10 @@ def test_asof_cannot_cross_snapshot(bundle):
 def test_calendar_gaps_remain_visible(bundle):
     gaps = missing_sessions(bundle, {"2025-02-25", "2025-02-28"})
     assert gaps == ["2025-02-26", "2025-02-27"]
+
+
+def test_first_capture_cannot_publish_a_prior_session_ranking(bundle):
+    bundle.tables["universe"]["known_on"] = "2025-03-03"
+    assert not audit(bundle)["publishable"]
+    with pytest.raises(ValueError, match="formal ranking"):
+        screen(bundle)

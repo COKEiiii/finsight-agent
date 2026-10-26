@@ -14,3 +14,4 @@ data/finsight/
 reports/
 .coverage
 htmlcov/
+data/*.log

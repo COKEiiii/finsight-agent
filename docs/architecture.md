@@ -13,7 +13,7 @@ Existing root-level learning files remain callable. Their executor accepts an in
 - `finsight.sqlite`: snapshots, immutable run payloads, strategy definitions, research cache, journal events.
 - `exports/<run-id>/`: CSV, JSON and Markdown artifacts.
 
-Every screening record identifies its snapshot, strategy configuration and code revision. The code revision contains the Git HEAD and a digest of working changes, so uncommitted local development is distinguished from a clean release. Strategy registration compares complete validated configurations and prevents accidental reuse of a version with different settings.
+Every screening record identifies its snapshot, strategy configuration and code revision. The code revision contains the Git HEAD when available and a digest of the actual runtime Python modules, so installed code and local edits are distinguishable. Strategy registration compares complete validated configurations and prevents accidental reuse of a version with different settings.
 
 Financial revisions preserve first-observed availability. An announcement date alone does not prove that the returned values are the originally published ones. A freshly retrieved value is usable no earlier than its first observation. Existing captured states/financial versions are merged forward; values are never silently backdated.
 
@@ -35,7 +35,7 @@ Historical research cannot pass unless all named data checks pass: historical un
 
 The current release supports building and auditing the workflow. It does not provide a historically certified free A-share dataset. Eight to twelve weeks of prospective snapshots and actual simulated executions are a separate observation phase, not a substitute label for historical validation.
 
-Evidence IDs and structured schemas are mechanically validated. Semantic correctness of model prose still requires human spot checks; citations alone do not prove an interpretation correct. Local model failures are saved as failed cards and do not replace or modify screening results.
+Evidence IDs, structured schemas and numeric claims against cited evidence are mechanically checked (including documented percentage/amount conversions and rounding). These checks reject unsupported numbers but do not establish semantic entailment or valuation conclusions. Semantic correctness of model prose still requires human spot checks; citations alone do not prove an interpretation correct. Local model failures are saved as failed cards and do not replace or modify screening results.
 
 ## Follow-up versions
 

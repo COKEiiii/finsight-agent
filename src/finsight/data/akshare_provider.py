@@ -56,6 +56,12 @@ class AKShareProvider:
                     frame = pd.read_json(io.StringIO(result.stdout), orient="table")
                 if not isinstance(frame, pd.DataFrame) or frame.empty:
                     raise ValueError(f"{method}: empty response")
+                # Key/value endpoints contain strings and numbers in a single object column.
+                # Parquet has no implicit mixed scalar union, so preserve those values as strings.
+                for column in frame.select_dtypes(include=["object"]).columns:
+                    types = {type(v) for v in frame[column].dropna()}
+                    if str in types and len(types) > 1:
+                        frame[column] = frame[column].astype("string")
                 folder.mkdir(parents=True, exist_ok=True)
                 # Only successful calls enter the cache.
                 frame.to_parquet(folder / "data.parquet", index=False)
@@ -75,14 +81,23 @@ class AKShareProvider:
         return pd.DataFrame({"trade_date": date_column(frame["trade_date"])}).dropna().drop_duplicates().sort_values("trade_date")
 
     def stock_list(self) -> pd.DataFrame:
-        sh = self.call("stock_info_sh_name_code", symbol="主板A股").rename(columns={
-            "证券代码": "code", "证券简称": "name", "上市日期": "listed_on",
-        })
-        sz = self.call("stock_info_sz_name_code", symbol="A股列表").rename(columns={
-            "A股代码": "code", "A股简称": "name", "A股上市日期": "listed_on",
-        })
-        sz = sz[sz["板块"] == "主板"]
-        frame = pd.concat([sh[["code", "name", "listed_on"]], sz[["code", "name", "listed_on"]]], ignore_index=True)
+        try:
+            sh = self.call("stock_info_sh_name_code", symbol="主板A股").rename(columns={
+                "证券代码": "code", "证券简称": "name", "上市日期": "listed_on",
+            })
+            sz = self.call("stock_info_sz_name_code", symbol="A股列表").rename(columns={
+                "A股代码": "code", "A股简称": "name", "A股上市日期": "listed_on",
+            })
+            sz = sz[sz["板块"] == "主板"]
+            frame = pd.concat([sh[["code", "name", "listed_on"]], sz[["code", "name", "listed_on"]]], ignore_index=True)
+        except (ValueError, KeyError):
+            # A current quote list can supply identities, never historical membership/listing dates.
+            frame = self.call("stock_zh_a_spot_em").rename(columns={"代码": "code", "名称": "name"})
+            frame["code"] = frame["code"].astype(str).str.zfill(6)
+            frame = frame[frame["code"].str.startswith(("600", "601", "603", "605", "000", "001", "002", "003"))].copy()
+            frame["listed_on"] = None
+            frame = frame[["code", "name", "listed_on"]]
+            self.issues.append("交易所列表接口不可用，使用当前行情列表确认股票代码；上市日期逐股核实，不回填历史股票池。")
         frame["code"] = frame["code"].astype(str).str.zfill(6)
         frame["symbol"] = frame["code"].map(normalize_symbol)
         frame["listed_on"] = date_column(frame["listed_on"])
@@ -105,6 +120,24 @@ class AKShareProvider:
                              "listed_on": None, "industry": None})
         return pd.DataFrame(rows)
 
+    def financial_history(self, symbol: str, start: date, day: date, calendar: pd.DataFrame) -> pd.DataFrame:
+        frame = self.call("stock_financial_analysis_indicator_em", symbol=symbol, indicator="按报告期").rename(columns={
+            "REPORT_DATE": "report_period", "NOTICE_DATE": "announcement_date",
+            "ROEJQ": "roe", "TOTALOPERATEREVETZ": "revenue_growth",
+        })
+        frame["report_period"] = date_column(frame["report_period"])
+        frame["announcement_date"] = date_column(frame["announcement_date"])
+        frame = frame[frame["report_period"].str.endswith("12-31") &
+                      (frame["report_period"] >= f"{start.year - 2}-01-01") &
+                      (frame["announcement_date"] <= str(day))].copy()
+        frame["available_on"] = frame["announcement_date"].map(
+            lambda d: max(next((s for s in calendar["trade_date"] if s > str(d)), "9999-12-31"),
+                          str(self.captured_at.date())))
+        frame["symbol"] = symbol
+        frame["version"] = "latest-unverified-" + str(self.captured_at.date())
+        frame["source"], frame["fetched_at"] = "akshare:stock_financial_analysis_indicator_em", self.captured_at.isoformat()
+        return frame[["symbol", "report_period", "announcement_date", "available_on", "roe", "revenue_growth", "version", "source", "fetched_at"]]
+
     def fetch(self, as_of: date | None = None, start: date | None = None,
               symbols: list[str] | None = None, mainboard: bool = False) -> SnapshotBundle:
         calendar = self.calendar()
@@ -114,7 +147,7 @@ class AKShareProvider:
         if requested > latest_allowed:
             raise ValueError("daily data is available only after 18:00 Asia/Shanghai; requested cutoff is too early")
         available = calendar[calendar["trade_date"] <= str(requested)]
-        if available.empty or (requested - date.fromisoformat(available.iloc[-1]["trade_date"])).days > 10:
+        if available.empty or calendar.iloc[-1]["trade_date"] < str(requested):
             raise ValueError("trading calendar does not cover requested date; no weekday fallback is allowed")
         day = date.fromisoformat(available.iloc[-1]["trade_date"])
         start = start or day - timedelta(days=430)
@@ -131,7 +164,7 @@ class AKShareProvider:
         if wanted - set(stocks["symbol"]):
             self.issues.append("Some requested symbols are not present in the current mainboard stock list")
         reports = []
-        for year in range(start.year - 2, day.year):
+        for year in (range(start.year - 2, day.year) if mainboard else []):
             try:
                 report = self.call("stock_yjbb_em", date=f"{year}1231").rename(columns={
                     "股票代码": "code", "净资产收益率": "roe", "营业总收入-同比增长": "revenue_growth",
@@ -156,11 +189,27 @@ class AKShareProvider:
         bars, valuations, states = [], [], []
         for stock in stocks.to_dict("records"):
             code, symbol = stock["code"], stock["symbol"]
+            if financials[financials["symbol"] == symbol].empty:
+                try:
+                    individual = self.financial_history(symbol, start, day, calendar)
+                    financials = pd.concat([financials, individual], ignore_index=True) if not financials.empty else individual
+                except (ValueError, KeyError) as exc:
+                    self.issues.append(f"{symbol}: financials unavailable: {exc}")
             industry = stock.get("industry")
             matching = financials[financials["symbol"] == symbol]
             if not matching.empty and "industry" in matching:
                 industries = matching.sort_values("report_period")["industry"].dropna()
                 industry = industries.iloc[-1] if not industries.empty else None
+            if (industry is None or pd.isna(industry) or pd.isna(stock["listed_on"])) and mainboard:
+                try:
+                    info = self.call("stock_individual_info_em", symbol=code, timeout=10)
+                    info = dict(zip(info["item"], info["value"]))
+                    industry = info.get("行业", industry)
+                    if pd.isna(stock["listed_on"]):
+                        listed = pd.to_datetime(str(info["上市时间"]).split(".")[0], format="%Y%m%d", errors="coerce")
+                        stock["listed_on"] = None if pd.isna(listed) else listed.strftime("%Y-%m-%d")
+                except (ValueError, KeyError) as exc:
+                    self.issues.append(f"{symbol}: listing/industry verification unavailable: {exc}")
             states.append(dict(symbol=symbol, name=stock["name"], industry=industry,
                                listed_on=stock["listed_on"], board="mainboard",
                                is_st="ST" in stock["name"].upper(), is_delisting="退" in stock["name"],

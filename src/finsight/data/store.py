@@ -27,15 +27,15 @@ def safe_id(value: str) -> str:
 
 
 def code_version() -> str:
+    package = Path(__file__).resolve().parents[1]
+    runtime = b"".join(path.relative_to(package).as_posix().encode() + path.read_bytes()
+                       for path in sorted(package.rglob("*.py")))
+    digest = hashlib.sha256(runtime).hexdigest()[:12]
     try:
-        root = Path(__file__).resolve().parents[3]
-        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, stderr=subprocess.DEVNULL).decode().strip()
-        diff = subprocess.check_output(["git", "diff", "HEAD"], cwd=root)
-        for path in sorted((root / "src/finsight").rglob("*.py")):
-            diff += path.relative_to(root).as_posix().encode() + path.read_bytes()
-        return head + "+" + hashlib.sha256(diff).hexdigest()[:12]
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=package, stderr=subprocess.DEVNULL).decode().strip()
+        return head + "+runtime-" + digest
     except (OSError, subprocess.CalledProcessError):
-        return "finsight-0.1.0"
+        return "finsight-0.1.0+runtime-" + digest
 
 
 @dataclass
@@ -81,6 +81,7 @@ class Store:
             db.execute("INSERT OR IGNORE INTO strategies VALUES (?, ?)", (config.version, payload))
 
     def save_snapshot(self, bundle: SnapshotBundle) -> str:
+        bundle.meta.collector_version = code_version()
         snapshot_id = safe_id(bundle.meta.snapshot_id)
         parent = self.root / "snapshots"
         parent.mkdir(exist_ok=True)

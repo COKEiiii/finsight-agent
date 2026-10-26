@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
   "pandas>=2.2,<3", "numpy>=1.26,<2.4", "pydantic>=2.10,<3",
   "pyarrow>=16,<24", "httpx>=0.27,<1", "openai>=1.55,<4",
-  "python-dotenv>=1,<2", "ollama>=0.6,<1", "streamlit>=1.40,<2",
+  "python-dotenv>=1,<2", "ollama>=0.6,<1", "streamlit>=1.50,<2",
   "akshare>=1.17,<2",
 ]
 

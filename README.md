@@ -19,7 +19,7 @@ finsight demo
 finsight dashboard
 ```
 
-`finsight demo` 使用固定随机种子的虚构数据及离线模板，不联网、不调用模型，生成 10 个候选、研究卡和 2025 年回测演示。数据、SQLite 和导出文件默认位于 `data/finsight/`，已排除在 Git 之外。
+`finsight demo` 使用固定随机种子的虚构数据及离线模板，不联网、不调用模型，生成 10 个候选、研究卡和 2025 年回测演示。在界面左侧选择对应演示快照后运行选股。数据、SQLite 和导出文件默认位于 `data/finsight/`，已排除在 Git 之外。
 
 开发时可使用 `pip install -e '.[dev]'`；如果本机忽略了 editable `.pth` 文件，使用非 editable 安装，或以 `PYTHONPATH=src python -m finsight ...` 运行源码。
 
@@ -32,7 +32,7 @@ finsight screen                     # 复制输出中的 run_id
 finsight research --run RUN_ID --provider ollama --model qwen3.5:4b --limit 1
 ```
 
-Dashboard 的“研究卡”页面也可选择本地模型。默认先生成一只股票，按需扩大到 Top 10。模型仅能读取当前候选股的快照证据；不会调整量化排名。每只最多 3 次模型请求、6 次工具执行、每次输出上限 1500 tokens；失败与格式修正计入预算。页面刷新不触发调用，相同输入、提示词、模型和端点复用缓存。离线模板会明确标为 `demo`。
+Dashboard 的“研究卡”页面也可选择本地模型。默认先生成一只股票，按需扩大到 Top 10。模型仅能读取当前候选股的快照证据；不会调整量化排名。每只最多 3 次模型请求、6 次工具执行、每次输出上限 1500 tokens；失败与格式修正计入预算。研究卡会核验引用与数字，明显不受证据支持的数字会被拒绝。页面刷新不触发调用，相同输入、提示词、模型和端点复用缓存。离线模板会明确标为 `demo`。
 
 配置示例：
 
@@ -68,9 +68,11 @@ finsight status
 ```bash
 finsight watch --once                # 检查最近已完成交易日；适合系统调度
 finsight watch                       # 常驻检查，补采行情历史
+finsight schedule install            # macOS：安装每天18:05与登录时采集
+finsight schedule status             # 查看本机定时任务状态
 ```
 
-可在 cron/launchd 中每个工作日 18:05 运行 `watch --once`，也可每天登录时执行一次。休眠期间错过的行情可以补采，未保存的当日财务/股票状态版本不可事后重建；质量报告列出缺失快照日期。程序不会把补采值伪装成当日已知信息。系统调度的安装方式见 [运行说明](docs/operations.md)。
+可在 cron/launchd 中每个工作日 18:05 运行 `watch --once`，也可每天登录时执行一次。休眠期间错过的行情可以补采，未保存的当日财务/股票状态版本不可事后重建；质量报告列出缺失快照日期。程序不会把补采值伪装成当日已知信息。安装命令不会调度模型调用或下单。系统调度的配置与卸载方式见 [运行说明](docs/operations.md)。
 
 ## strategy_v0.1
 
@@ -107,7 +109,7 @@ finsight journal report --account paper --capital 100000
 finsight journal report --capital 100000 --actual-cash 80000 --actual-holdings holdings.json
 ```
 
-`holdings.json` 格式为 `{"600036.SH": 100}`。成交事件的 `quantity` 为**本次增量成交量**；不能既导入两笔部分成交，再重复导入包含它们的累计成交量。`event_id` 支持幂等导入；同 ID 内容冲突时整批回滚。每条事件关联已有选股记录和策略版本。首次录入前，账户应为空仓；导入交易应从账户起点完整记录。
+`holdings.json` 格式为 `{"600036.SH": 100}`。成交事件的 `quantity` 为**本次增量成交量**；不能既导入两笔部分成交，再重复导入包含它们的累计成交量。`event_id` 支持幂等导入；同 ID 内容冲突时整批回滚。每条事件关联已有选股记录和策略版本。同一交易日的事件应按实际执行先后导入。首次录入前，账户应为空仓；导入交易应从账户起点完整记录。
 
 ## 检查与项目结构
 
@@ -117,5 +119,7 @@ python -m ruff check src/finsight tests/finsight
 ```
 
 `src/finsight/` 包含数据、选股、研究、回测、组合、服务、CLI 和 Dashboard。原有根目录 `app.py`、`agent.py`、通用工具和测试继续作为 Ollama 学习入口；Agent 支持注入独立工具注册表。GitHub Actions 在 Python 3.11/3.12 上运行测试、静态检查和离线 Demo。
+
+本次联调结果见 [验证记录](docs/validation.md)。
 
 参考：[TradingAgents](https://github.com/TauricResearch/TradingAgents)、[TradingAgents-CN](https://github.com/hsliuping/TradingAgents-CN)、[AKShare](https://akshare.akfamily.xyz/data/stock/stock.html)、[Ollama](https://docs.ollama.com/capabilities/tool-calling)、[DeepSeek Tool Calls](https://api-docs.deepseek.com/guides/tool_calls/)。本项目独立实现本地轻量工作流。
