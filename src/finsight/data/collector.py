@@ -47,6 +47,15 @@ class Collector(AKShareProvider):
         self.observations, self.observation_lock = {}, threading.Lock()
         self.mainboard = config.get("mainboard", False)
         self.sample_mode = not self.mainboard or bool(config.get("symbols"))
+        self.fallback_market = False
+        if broker.api is None:
+            with broker.store.connect() as db:
+                row = db.execute("SELECT 1 FROM job_requests r JOIN jobs j ON j.job_id=r.job_id "
+                    "WHERE r.method='stock_yjbb_em' AND r.error_kind IN ('timeout','rate_limit') "
+                    "AND substr(j.created_at,1,10)=? LIMIT 1", (broker.clock().date().isoformat(),)).fetchone()
+            self.fallback_market = row is not None
+            if self.fallback_market:
+                self.issues.append("今日东方财富批量财报曾超时；采用 BaoStock 行情/ROE 与新浪年报收入备用路径。")
         self.base_groups = {key: {s: f for s, f in base[key].groupby("symbol", sort=False)} if base is not None and "symbol" in base[key] else {}
                             for key in ("prices", "financials", "valuations")}
 
@@ -78,16 +87,26 @@ class Collector(AKShareProvider):
             except (ValueError, KeyError):
                 missing.append(market)
         if missing:
-            quote = self.call("stock_zh_a_spot_em")
-            observed = quote.attrs["fetched_at"]
-            quote = quote.rename(columns={"代码": "code", "名称": "name"})
-            quote["code"] = quote["code"].astype(str).str.zfill(6)
+            try:
+                quote = self.call("stock_zh_a_spot_em")
+                observed = quote.attrs["fetched_at"]
+                quote = quote.rename(columns={"代码": "code", "名称": "name"})
+                quote["code"] = quote["code"].astype(str).str.zfill(6)
+                quote["listed_on"] = None
+                note = "当前全市场行情列表；上市日期逐股核实"
+            except ValueError:
+                quote = self.call("baostock_basic")
+                observed = quote.attrs["fetched_at"]
+                quote = quote.rename(columns={"code_name": "name", "ipoDate": "listed_on"})
+                quote["code"] = quote["code"].str[3:]
+                quote = quote[quote["type"] == "1"].copy()
+                note = "BaoStock 基本资料"
             quote = quote[quote["code"].str.startswith(MAINBOARD_PREFIXES)].copy()
             quote["_market"] = np.where(quote["code"].str.startswith("6"), "SH", "SZ")
             quote = quote[quote["_market"].isin(missing)]
-            quote["listed_on"], quote["observed_at"] = None, observed
+            quote["observed_at"] = observed
             pieces.append(quote[["code", "name", "listed_on", "observed_at"]])
-            self.issues.append("部分交易所列表不可用，缺失市场采用当前全市场行情列表；上市日期逐股核实。")
+            self.issues.append(f"部分交易所列表不可用，缺失市场采用{note}。")
         frame = pd.concat(pieces, ignore_index=True)
         frame["code"] = frame["code"].astype(str).str.zfill(6)
         frame["symbol"] = frame["code"].map(normalize_symbol)
@@ -144,14 +163,79 @@ class Collector(AKShareProvider):
         raw["source"], raw["fetched_at"] = "akshare:stock_zh_a_hist", fetched
         return raw[["symbol", "trade_date", "open", "high", "low", "close", "adj_close", "volume", "amount", "suspended", "prev_close", "limit_up", "limit_down", "source", "fetched_at"]]
 
+    def _bars_baostock(self, code: str, lower: str, day: str):
+        qualified = ("sh." if code.startswith("6") else "sz.") + code
+        kwargs = {"code": qualified, "start_date": lower, "end_date": day}
+        raw = self.call("baostock_kline", **kwargs, adjustflag="3")
+        raw_fetched = raw.attrs["fetched_at"]
+        adjusted = self.call("baostock_kline", **kwargs, adjustflag="1")
+        fetched = max(raw_fetched, adjusted.attrs["fetched_at"])
+        raw = raw.rename(columns={"date": "trade_date", "preclose": "prev_close"})
+        adjusted = adjusted.rename(columns={"date": "trade_date", "close": "adj_close"})
+        raw = raw.merge(adjusted[["trade_date", "adj_close"]], on="trade_date", how="left", validate="one_to_one")
+        raw = raw[raw["trade_date"].between(lower, day)].copy()
+        for field in ("open", "high", "low", "close", "prev_close", "volume", "amount", "adj_close", "peTTM", "pbMRQ"):
+            raw[field] = pd.to_numeric(raw[field], errors="coerce")
+        raw["symbol"] = normalize_symbol(code)
+        raw["suspended"] = raw["tradestatus"].eq("0")
+        raw["limit_up"], raw["limit_down"] = np.nan, np.nan
+        raw["source"], raw["fetched_at"] = "baostock:query_history_k_data_plus", fetched
+        prices = raw[["symbol", "trade_date", "open", "high", "low", "close", "adj_close", "volume", "amount",
+                      "suspended", "prev_close", "limit_up", "limit_down", "source", "fetched_at"]]
+        vals = raw[["symbol", "trade_date", "peTTM", "pbMRQ", "source", "fetched_at"]].rename(
+            columns={"peTTM": "pe_ttm", "pbMRQ": "pb"})
+        is_st = bool(raw.loc[raw["trade_date"] == day, "isST"].eq("1").any())
+        return prices, vals, is_st
+
+    def financial_history_fallback(self, symbol: str, start: date, day: date, calendar: pd.DataFrame):
+        code = symbol[:6]
+        income = self.call("stock_financial_report_sina", stock=code, symbol="利润表")
+        income_fetched = income.attrs["fetched_at"]
+        income = income.copy()
+        income["report_period"] = date_column(income["报告日"])
+        revenue_field = "营业总收入" if "营业总收入" in income else "营业收入"
+        if revenue_field not in income:
+            raise ValueError("Sina annual total revenue is unavailable")
+        income["revenue"] = pd.to_numeric(income[revenue_field], errors="coerce")
+        income["announcement_date"] = date_column(income["公告日期"])
+        by_period = income.drop_duplicates("report_period").set_index("report_period")
+        records = []
+        for year in range(start.year - 1, day.year):
+            current, previous = f"{year}-12-31", f"{year - 1}-12-31"
+            if current not in by_period.index or previous not in by_period.index:
+                continue
+            revenue, prior = by_period.loc[current, "revenue"], by_period.loc[previous, "revenue"]
+            if pd.isna(revenue) or pd.isna(prior) or prior <= 0:
+                continue
+            try:
+                profit = self.call("baostock_profit", code=("sh." if code.startswith("6") else "sz.") + code, year=year)
+                profit_fetched = profit.attrs["fetched_at"]
+                row = profit.loc[profit["statDate"] == current].iloc[0]
+                roe = pd.to_numeric(row["roeAvg"], errors="coerce")
+                if pd.isna(roe):
+                    continue
+                announcement = max(str(by_period.loc[current, "announcement_date"]), str(row["pubDate"]))
+                if announcement > str(day):
+                    continue
+                fetched = max(income_fetched, profit_fetched)
+                available = max(next((s for s in calendar["trade_date"] if s > announcement), "9999-12-31"), fetched[:10])
+                records.append({"symbol": symbol, "report_period": current, "announcement_date": announcement,
+                    "available_on": available, "roe": float(roe) * 100,
+                    "revenue_growth": (float(revenue) / float(prior) - 1) * 100,
+                    "version": "observed-" + fetched, "source": "baostock:query_profit_data+sina:stock_financial_report_sina",
+                    "fetched_at": fetched})
+            except (ValueError, KeyError, IndexError):
+                continue
+        return pd.DataFrame(records, columns=sorted(REQUIRED["financials"] | {"version", "source", "fetched_at"}))
+
     def _symbol(self, stock, annual, start, day, calendar):
         self.jobs.check_cancelled(self.job_id)
         symbol, code, issues = stock["symbol"], stock["code"], []
         observed = stock.get("observed_at") or self.observed("stock_individual_info_em", symbol=code, timeout=10)
         industry = stock.get("industry")
         try:
-            info = self.call("stock_individual_info_em", symbol=code, timeout=10)
-            industry_observed = info.attrs["fetched_at"]
+            info = self.call("stock_individual_info_em", symbol=code, timeout=10) if not self.fallback_market else pd.DataFrame({"item": [], "value": []})
+            industry_observed = info.attrs.get("fetched_at", observed)
             values = dict(zip(info["item"], info["value"]))
             industry = values.get("行业")
             if pd.isna(stock.get("listed_on")):
@@ -175,8 +259,13 @@ class Collector(AKShareProvider):
             prior = calendar[calendar["trade_date"] <= old_prices["trade_date"].max()]["trade_date"].tolist()
             if prior:
                 lower = max(str(start), prior[max(0, len(prior) - 10)])
+        backup_vals = None
         try:
-            new_prices = self._bars(code, lower, day)
+            if self.fallback_market:
+                new_prices, backup_vals, confirmed_st = self._bars_baostock(code, lower, day)
+                state["is_st"] = state["is_st"] or confirmed_st
+            else:
+                new_prices = self._bars(code, lower, day)
             if not old_prices.empty:
                 overlap = old_prices.merge(new_prices, on=["symbol", "trade_date"], suffixes=("_old", "_new"))
                 changed = any(not np.allclose(overlap[k + "_old"], overlap[k + "_new"], equal_nan=True, rtol=1e-10, atol=1e-10)
@@ -185,7 +274,10 @@ class Collector(AKShareProvider):
                     sessions = calendar[calendar["trade_date"] <= day]["trade_date"].tolist()
                     revised_lower = min(lower, sessions[max(0, len(sessions) - 61)])
                     if revised_lower < lower:
-                        new_prices = self._bars(code, revised_lower, day)
+                        if self.fallback_market:
+                            new_prices, backup_vals, _ = self._bars_baostock(code, revised_lower, day)
+                        else:
+                            new_prices = self._bars(code, revised_lower, day)
                     issues.append(f"{symbol}: price/adjustment revision detected; factor window refreshed")
                 # The first bar of a newly requested range has no predecessor in that response.
                 # Reuse its known prior close so an unchanged overlap does not look like a revision.
@@ -196,14 +288,18 @@ class Collector(AKShareProvider):
             prices = merge_observations(old_prices, new_prices, ["symbol", "trade_date"])
         except (ValueError, KeyError) as exc:
             prices = old_prices
+            backup_vals = old_vals
             issues.append(f"{symbol}: prices unavailable: {exc}")
         try:
-            vals = self.call("stock_value_em", symbol=code)
-            fetched = vals.attrs["fetched_at"]
-            vals = vals.rename(columns={"数据日期": "trade_date", "PE(TTM)": "pe_ttm", "市净率": "pb"})
-            vals["trade_date"] = date_column(vals["trade_date"])
+            if backup_vals is not None:
+                vals = backup_vals
+            else:
+                vals = self.call("stock_value_em", symbol=code)
+                fetched = vals.attrs["fetched_at"]
+                vals = vals.rename(columns={"数据日期": "trade_date", "PE(TTM)": "pe_ttm", "市净率": "pb"})
+                vals["trade_date"] = date_column(vals["trade_date"])
+                vals["symbol"], vals["source"], vals["fetched_at"] = symbol, "akshare:stock_value_em", fetched
             vals = vals[vals["trade_date"].between(str(start), day)].copy()
-            vals["symbol"], vals["source"], vals["fetched_at"] = symbol, "akshare:stock_value_em", fetched
             vals = merge_observations(old_vals, vals[["symbol", "trade_date", "pe_ttm", "pb", "source", "fetched_at"]], ["symbol", "trade_date"])
         except (ValueError, KeyError) as exc:
             vals = old_vals
@@ -211,7 +307,8 @@ class Collector(AKShareProvider):
         fin = annual[annual["symbol"] == symbol] if not annual.empty else annual
         if fin.empty:
             try:
-                fin = self.financial_history(symbol, start, date.fromisoformat(day), calendar)
+                fin = (self.financial_history_fallback(symbol, start, date.fromisoformat(day), calendar)
+                       if self.fallback_market else self.financial_history(symbol, start, date.fromisoformat(day), calendar))
             except (ValueError, KeyError) as exc:
                 issues.append(f"{symbol}: financials unavailable: {exc}")
         if not fin.empty or not old_fin.empty:
@@ -249,13 +346,24 @@ class Collector(AKShareProvider):
         self.jobs.update(self.job_id, progress={"phase": "financial_bulk", "symbols_total": len(stocks),
                                               "universe_id": uid, "mode": "incremental" if self.base else "bootstrap"})
         annual = []
-        if self.mainboard:
+        if self.mainboard and not self.fallback_market:
             lower_year = date.fromisoformat(day).year - 2 if self.base else start.year - 2
             for year in range(lower_year, date.fromisoformat(day).year):
                 try:
                     annual.append(self._annual(year, calendar))
                 except (ValueError, KeyError) as exc:
                     self.issues.append(f"annual {year}: {exc}")
+                    self.fallback_market = True
+                    self.issues.append("东方财富年报批量接口失败；后续单股改用 BaoStock ROE 与新浪年报收入，来源逐行记录。")
+                    break
+        if self.fallback_market:
+            try:
+                industries = self.call("baostock_industry")
+                industries["symbol"] = industries["code"].str[3:].map(normalize_symbol)
+                industries = industries.drop_duplicates("symbol").set_index("symbol")
+                stocks["industry"] = stocks["symbol"].map(industries["industry"])
+            except (ValueError, KeyError):
+                self.issues.append("备用行业分类不可用；未知行业计入缺失。")
         annual = pd.concat(annual, ignore_index=True) if annual else pd.DataFrame(columns=sorted(REQUIRED["financials"]))
         results = []
         with ThreadPoolExecutor(max_workers=self.broker.workers) as executor:
@@ -264,6 +372,7 @@ class Collector(AKShareProvider):
                 self.jobs.check_cancelled(self.job_id)
                 results.append(future.result())
                 self.jobs.update(self.job_id, progress={"phase": "per_stock", "symbols_completed": len(results),
+                                                       "symbols_with_errors": sum(bool(item[4]) for item in results),
                                                        "effective_workers": self.broker.limit})
         results.sort(key=lambda r: r[0]["symbol"])
         states = pd.DataFrame([r[0] for r in results])
@@ -278,8 +387,12 @@ class Collector(AKShareProvider):
         for key, pos in (("prices", 1), ("valuations", 2), ("financials", 3)):
             parts = [r[pos] for r in results if not r[pos].empty]
             tables[key] = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=sorted(REQUIRED[key]))
-        benchmark = self.call("stock_zh_index_daily_em", symbol="sh000300", start_date=start.strftime("%Y%m%d"), end_date=day.replace("-", ""))
+        try:
+            benchmark = self.call("stock_zh_index_daily_em", symbol="sh000300", start_date=start.strftime("%Y%m%d"), end_date=day.replace("-", "")) if not self.fallback_market else self.call("baostock_index", start_date=str(start), end_date=day)
+        except ValueError:
+            benchmark = self.call("baostock_index", start_date=str(start), end_date=day)
         benchmark = benchmark.rename(columns={"date": "trade_date"})
+        benchmark["close"] = pd.to_numeric(benchmark["close"], errors="coerce")
         benchmark["trade_date"] = date_column(benchmark["trade_date"])
         tables["benchmark"] = benchmark[benchmark["trade_date"].between(str(start), day)][["trade_date", "close"]]
         tables["actions"] = self.base["actions"] if self.base else pd.DataFrame(columns=sorted(REQUIRED["actions"]))

@@ -19,8 +19,8 @@ from finsight.models import fingerprint
 
 
 class RequestFailure(ValueError):
-    def __init__(self, kind: str, method: str):
-        self.kind = kind
+    def __init__(self, kind: str, method: str, detail: str = "", http_bytes: int = 0):
+        self.kind, self.detail, self.http_bytes = kind, detail, http_bytes
         super().__init__(f"{method}: {kind}")
 
 
@@ -52,7 +52,8 @@ class WorkerPool:
                 raise RequestFailure("timeout", method)
             result = pipe.recv()
             if not result["ok"]:
-                raise RequestFailure(result["kind"], method)
+                detail = result.get("error", "") + (f": HTTP {result['http_status']}" if result.get("http_status") else "")
+                raise RequestFailure(result["kind"], method, detail, result.get("http_bytes") or 0)
             return result
         except (EOFError, BrokenPipeError, OSError) as exc:
             broken = True
@@ -97,7 +98,7 @@ class RequestBroker:
             self.pool.close()
 
     def _ttl(self, method: str) -> float:
-        return 7 * 86400 if method == "stock_individual_info_em" else 86400
+        return 7 * 86400 if method in {"stock_individual_info_em", "baostock_industry"} else 86400
 
     def _read(self, row, loaded: str) -> pd.DataFrame | None:
         if not row or not row["path"]:
@@ -114,14 +115,16 @@ class RequestBroker:
             return None
 
     def _record(self, request_id, method, kwargs, status, *, path=None, fetched_at=None,
-                attempts=0, elapsed=0., size=0, hit=False, error_kind=None):
+                attempts=0, elapsed=0., size=0, hit=False, error_kind=None,
+                loaded_at=None, http_bytes=0, error_detail=None):
         with self.lock, self.store.connect() as db:
-            db.execute("INSERT INTO job_requests(job_id,request_id,method,kwargs,status,path,fetched_at,attempts,elapsed,bytes,cache_hit,error_kind,error) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(job_id,request_id) DO UPDATE SET "
+            db.execute("INSERT INTO job_requests(job_id,request_id,method,kwargs,status,path,fetched_at,attempts,elapsed,bytes,cache_hit,error_kind,error,loaded_at,http_bytes,error_detail) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(job_id,request_id) DO UPDATE SET "
                 "status=excluded.status,path=excluded.path,fetched_at=excluded.fetched_at,attempts=job_requests.attempts+excluded.attempts,"
-                "elapsed=job_requests.elapsed+excluded.elapsed,bytes=excluded.bytes,cache_hit=excluded.cache_hit,error_kind=excluded.error_kind,error=excluded.error",
+                "elapsed=job_requests.elapsed+excluded.elapsed,bytes=excluded.bytes,cache_hit=excluded.cache_hit,error_kind=excluded.error_kind,error=excluded.error,"
+                "loaded_at=excluded.loaded_at,http_bytes=job_requests.http_bytes+excluded.http_bytes,error_detail=excluded.error_detail",
                 (self.job_id, request_id, method, json.dumps(kwargs, sort_keys=True), status, path, fetched_at,
-                 attempts, elapsed, size, int(hit), error_kind, error_kind))
+                 attempts, elapsed, size, int(hit), error_kind, error_kind, loaded_at, http_bytes, error_detail))
 
     def call(self, method: str, *, cache_ttl: float | None = None, **kwargs) -> pd.DataFrame:
         if self.cancel_event.is_set():
@@ -138,16 +141,16 @@ class RequestBroker:
         frame = self._read(checkpoint, loaded)
         if frame is not None:
             self._record(key, method, kwargs, "done", path=checkpoint["path"], fetched_at=checkpoint["fetched_at"],
-                         size=checkpoint["bytes"], hit=True)
+                         size=checkpoint["bytes"], hit=True, loaded_at=loaded)
             return frame
         ttl = self._ttl(method) if cache_ttl is None else cache_ttl
         fresh = cached and (now - datetime.fromisoformat(cached["fetched_at"])).total_seconds() < ttl
-        if fresh and (method != "stock_individual_info_em" or ttl <= 86400):
+        if fresh and (method not in {"stock_individual_info_em", "baostock_industry"} or ttl <= 86400):
             fresh = cached["fetched_at"][:10] == loaded[:10]
         frame = self._read(cached, loaded) if fresh else None
         if frame is not None:
             self._record(key, method, kwargs, "done", path=cached["path"], fetched_at=cached["fetched_at"],
-                         size=cached["bytes"], hit=True)
+                         size=cached["bytes"], hit=True, loaded_at=loaded)
             return frame
         self._record(key, method, kwargs, "running")
         failure = "upstream"
@@ -168,8 +171,10 @@ class RequestBroker:
                 if self.api is None:
                     response = self.pool.execute(method, kwargs, timeout)
                     frame = response["frame"]
+                    http_bytes = response.get("http_bytes") or 0
                 else:
                     frame = getattr(self.api, method)(**kwargs)
+                    http_bytes = 0
                 if not isinstance(frame, pd.DataFrame) or frame.empty:
                     raise RequestFailure("empty_response", method)
                 for column in frame.select_dtypes(include=["object"]).columns:
@@ -189,14 +194,18 @@ class RequestBroker:
                 with self.lock, self.store.connect() as db:
                     db.execute("INSERT OR REPLACE INTO request_cache VALUES (?,?,?,?,?)", (key, relative, fetched, digest, len(data)))
                 self._record(key, method, kwargs, "done", path=relative, fetched_at=fetched, attempts=1,
-                             elapsed=time.perf_counter() - started, size=len(data))
+                             elapsed=time.perf_counter() - started, size=len(data), loaded_at=fetched,
+                             http_bytes=http_bytes)
                 frame.attrs["loaded_at"] = fetched
                 with self.condition:
                     self.failure_streak = 0
                 return frame
             except (ValueError, OSError) as exc:
                 failure = exc.kind if isinstance(exc, RequestFailure) else "upstream_schema"
-                self._record(key, method, kwargs, "failed", attempts=1, elapsed=time.perf_counter() - started, error_kind=failure)
+                self._record(key, method, kwargs, "failed", attempts=1, elapsed=time.perf_counter() - started,
+                             error_kind=failure, loaded_at=self.clock().isoformat(),
+                             http_bytes=exc.http_bytes if isinstance(exc, RequestFailure) else 0,
+                             error_detail=exc.detail if isinstance(exc, RequestFailure) else type(exc).__name__)
                 with self.condition:
                     self.failure_streak += 1
                     if failure in {"timeout", "rate_limit"} or self.failure_streak >= 3:

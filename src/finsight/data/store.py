@@ -91,6 +91,12 @@ class Store:
                     screen_run_id TEXT NOT NULL, coverage REAL NOT NULL,
                     PRIMARY KEY(universe_id,trade_date));
             """)
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(job_requests)")}
+            for name, definition in {"loaded_at": "TEXT", "http_bytes": "INTEGER NOT NULL DEFAULT 0",
+                                     "error_detail": "TEXT"}.items():
+                if name not in columns:
+                    db.execute(f"ALTER TABLE job_requests ADD COLUMN {name} {definition}")
+            db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (3)")
 
     @contextmanager
     def connect(self):

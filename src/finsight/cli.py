@@ -47,6 +47,10 @@ def parser() -> argparse.ArgumentParser:
     research.add_argument("--provider", choices=["ollama", "deepseek", "demo"], default=os.getenv("FINSIGHT_PROVIDER", "ollama"))
     research.add_argument("--model")
     research.add_argument("--limit", type=int, default=10)
+    evaluation = commands.add_parser("evaluate", help="prepare 30 research cases or compare local Ollama models")
+    evaluation.add_argument("--run", required=True, help="screening run containing ten real candidates")
+    evaluation.add_argument("--models", help="comma-separated local models; omit to prepare cases only")
+    evaluation.add_argument("--limit", type=int, default=30, help="number of cases to run per model; full gate requires 30")
     backtest = commands.add_parser("backtest", help="daily ledger and comparable momentum baseline")
     backtest.add_argument("--snapshot")
     backtest.add_argument("--start", type=date.fromisoformat, default=date(2023, 1, 1))
@@ -138,6 +142,10 @@ def main(argv: list[str] | None = None) -> int:
             cards = service.research(args.run, args.provider, args.model, args.limit)
             output([c.model_dump(mode="json") for c in cards])
             return 2 if any(c.status == "failed" for c in cards) else 0
+        elif args.command == "evaluate":
+            from finsight.evaluation import evaluate_run
+            output(evaluate_run(service.store, args.run, models=tuple(args.models.split(",")) if args.models else (),
+                                limit=args.limit))
         elif args.command == "backtest":
             result = service.backtest(args.snapshot, args.start, args.end, args.capital)
             output({k: result[k] for k in ("run_id", "status", "start", "end", "synthetic") } |

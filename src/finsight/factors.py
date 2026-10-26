@@ -46,6 +46,10 @@ def evaluate(bundle: SnapshotBundle, as_of: date, config: StrategyConfig) -> tup
         price_metrics["continuous"] = sequences.map(lambda values: list(values) == expected and len(expected) == 61)
         last_rows = window.groupby("symbol", sort=False).tail(1).set_index("symbol")
         price_metrics["suspended"] = last_rows["suspended"]
+        if "source" in last_rows:
+            price_metrics["source"] = last_rows["source"]
+        if "fetched_at" in last_rows:
+            price_metrics["fetched_at"] = last_rows["fetched_at"]
         price_metrics["momentum_60"] = price_metrics["last_adj"] / price_metrics["first_adj"] - 1
         price_metrics["ma_ratio"] = price_metrics["mean_20"] / price_metrics["mean_60"] - 1
         window["_input_hash"] = pd.util.hash_pandas_object(window[["trade_date", "adj_close", "amount", "close"]], index=False)
@@ -149,6 +153,8 @@ def evaluate(bundle: SnapshotBundle, as_of: date, config: StrategyConfig) -> tup
             "report_period": fin["report_period"], "announcement_date": fin["announcement_date"],
             "available_on": fin["available_on"], "source": bundle.meta.source,
             "financial_source": fin.get("source", bundle.meta.source), "financial_version": fin.get("version", "unverified"),
+            "market_source": metric.get("source", bundle.meta.source),
+            "market_version": metric.get("fetched_at", bundle.meta.captured_at.isoformat()),
             "valuation_source": val.get("source", bundle.meta.source),
             "fetched_at": fin.get("fetched_at", bundle.meta.captured_at.isoformat()),
             "factor_input_id": metric["input_id"]})

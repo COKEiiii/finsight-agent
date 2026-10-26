@@ -64,7 +64,7 @@ class Jobs:
         with self.store.connect() as db:
             requests = db.execute("SELECT count(*) AS total,sum(status='done') AS completed,sum(status='failed') AS failed,"
                 "sum(attempts) AS network_attempts,sum(cache_hit) AS cache_hits,sum(bytes) AS serialized_bytes,"
-                "sum(elapsed) AS request_seconds FROM job_requests WHERE job_id=?", (job_id,)).fetchone()
+                "sum(http_bytes) AS http_bytes,sum(elapsed) AS request_seconds FROM job_requests WHERE job_id=?", (job_id,)).fetchone()
         result["requests"] = {key: value or 0 for key, value in dict(requests).items()}
         return result
 

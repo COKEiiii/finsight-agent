@@ -6,7 +6,7 @@ import csv
 import io
 import json
 import os
-from datetime import date
+from datetime import date, datetime
 from uuid import uuid4
 
 import pandas as pd
@@ -64,10 +64,13 @@ def main():
                 format_func=lambda identifier: f"{by_job[identifier]['status']} · {by_job[identifier]['config']['universe_id'][:12]} · {identifier[:8]}")
             job = by_job[job_id]
             progress, requests = job["progress"], job["requests"]
+            elapsed = (datetime.now().astimezone() - datetime.fromisoformat(job["created_at"])).total_seconds()
             done, total = progress.get("symbols_completed", 0), progress.get("symbols_total", 0)
             if total:
                 st.progress(min(done / total, 1.0), text=f"股票 {done}/{total} · {progress.get('phase', job['status'])}")
-            st.caption(f"请求成功 {requests['completed']} · 失败 {requests['failed']} · 缓存命中 {requests['cache_hits']} · 请求耗时 {requests['request_seconds']:.1f} 秒")
+                if progress.get("symbols_with_errors"):
+                    st.caption(f"存在字段或接口问题的股票：{progress['symbols_with_errors']} 只；完成后按覆盖率统一判定。")
+            st.caption(f"请求成功 {requests['completed']} · 失败 {requests['failed']} · 缓存命中 {requests['cache_hits']} · 总耗时 {elapsed / 60:.1f} 分钟 · 请求耗时 {requests['request_seconds']:.1f} 秒")
             coverage = progress.get("coverage", {})
             if coverage:
                 st.caption(f"覆盖率 {coverage.get('coverage', 0):.2%} · {progress.get('publication_status', '预览')}")
@@ -129,7 +132,7 @@ def main():
         if coverage:
             st.metric("可完整判定的覆盖率", f"{coverage.get('coverage', 0):.2%}", help="已确认的 ST、新股等规则排除项不进入分母；数据缺失和接口失败仍进入分母。")
             st.caption(f"判定 {coverage.get('evaluated', 0)} / 应判定 {coverage.get('required', 0)} · 发布门槛 98%")
-            industry = coverage.get("by_industry", {})
+            industry = coverage.get("industries", {})
             if industry:
                 st.dataframe(pd.DataFrame([{"行业": key, **value} for key, value in industry.items()]), hide_index=True, width="stretch")
             missing = coverage.get("missing", [])

@@ -35,8 +35,10 @@ def facts_for(result: ScreeningResult, candidate: dict) -> dict[str, dict]:
                 "date": str(candidate.get("trade_date") if group in {"market", "valuation", "selection"} else candidate.get("report_period")),
                 "known_at": str(candidate.get("available_on") if group == "financials" else result.as_of),
                 "source": str(candidate.get("financial_source" if group == "financials" else
-                                            "valuation_source" if group == "valuation" else "source", "snapshot")),
-                "version": str(candidate.get("financial_version") if group == "financials" else result.snapshot_id),
+                                            "valuation_source" if group == "valuation" else
+                                            "market_source" if group == "market" else "source", "snapshot")),
+                "version": str(candidate.get("financial_version") if group == "financials" else
+                               candidate.get("market_version") if group == "market" else result.snapshot_id),
                 "snapshot_id": result.snapshot_id,
             }
     return facts

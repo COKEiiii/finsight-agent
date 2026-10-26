@@ -2,6 +2,7 @@ from datetime import date
 
 import pytest
 
+from finsight.evaluation import build_cases, evaluate_run
 from finsight.research import demo_content, evidence_for, render_card, research_candidate, validate_content
 from finsight.service import FinSight
 
@@ -74,3 +75,15 @@ def test_invalid_field_response_repairs_within_three_requests(tmp_path):
     bad["reasons"][0] = {"text": "营收增长。", "evidence_ids": ["financials.roe"]}
     card = research_candidate(result, candidate, service.store, Answers([bad, good]))
     assert card.status == "completed" and card.llm_calls == 2
+
+
+def test_thirty_case_suite_requires_real_candidates_and_tracks_synthetic_changes(tmp_path):
+    service, result, _, _ = ready(tmp_path)
+    with pytest.raises(ValueError, match="real candidates"):
+        build_cases(result)
+    cases = build_cases(result, allow_demo=True)
+    assert len(cases) == 30
+    assert sum(case["scenario"] == "actual_candidate" for case in cases) == 10
+    assert sum(case["synthetic_modification"] for case in cases) == 20
+    report = evaluate_run(service.store, result.run_id, allow_demo=True)
+    assert report["case_count"] == 30 and report["models"] == {}
