@@ -180,7 +180,7 @@ def simulate(bundle: SnapshotBundle, config: StrategyConfig, start: date, end: d
     total_cost, turnover = 0.0, 0.0
 
     def build_orders(signal_day: str, nav: float):
-        result = screen(bundle, config, date.fromisoformat(signal_day), baseline=baseline)
+        result = screen(bundle, config, date.fromisoformat(signal_day), baseline=baseline, preview=True)
         targets = select_targets(result.candidates, config)
         weights = {row["symbol"]: row for row in targets}
         orders = []
@@ -192,7 +192,7 @@ def simulate(bundle: SnapshotBundle, config: StrategyConfig, start: date, end: d
                 orders.append({"symbol": symbol, "action": "buy" if delta > 0 else "sell", "quantity": abs(delta)})
         signals.append({"signal_date": signal_day, "candidate_symbols": [r["symbol"] for r in result.candidates],
                         "targets": {s: r["target_weight"] for s, r in weights.items()},
-                        "eligible_count": result.eligible_count, "orders": orders})
+                        "eligible_count": result.eligible_count, "publication_status": result.publication_status, "orders": orders})
         return orders
 
     first_index = positions[days[0]]
@@ -281,6 +281,8 @@ def run_backtest(bundle: SnapshotBundle, config: StrategyConfig, start: date, en
     passed = bundle.meta.research_eligible and not strategy["issues"] and not baseline["issues"] and all(
         p["benchmark_nav"] is not None for p in comparison)
     if any(t["reason"] == "unverified_price_limit" for r in (strategy, baseline) for t in r["trades"]):
+        passed = False
+    if any(s["publication_status"] != "published" for r in (strategy, baseline) for s in r["signals"]):
         passed = False
     return {"snapshot_id": bundle.meta.snapshot_id, "start": str(start), "end": str(end),
             "research_eligible": passed, "synthetic": bundle.meta.synthetic,

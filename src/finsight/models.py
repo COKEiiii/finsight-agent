@@ -67,6 +67,14 @@ class MarketSnapshot(StrictModel):
     research_checks: dict[str, bool] = Field(default_factory=lambda: dict.fromkeys(RESEARCH_CHECKS, False))
     table_hashes: dict[str, str] = Field(default_factory=dict)
     collector_version: str = "unknown"
+    schema_version: int = 1
+    universe_id: str = ""
+    membership_id: str = ""
+    membership_symbols: list[str] = Field(default_factory=list)
+    universe_complete: bool = False
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    publication_status: Literal["published", "preview", "blocked"] = "published"
+    job_id: str | None = None
 
     @property
     def research_eligible(self) -> bool:
@@ -88,6 +96,13 @@ class ScreeningResult(StrictModel):
     universe_count: int
     synthetic: bool
     research_eligible: bool
+    schema_version: int = 1
+    universe_id: str = ""
+    membership_id: str = ""
+    publication_status: Literal["published", "preview", "blocked"] = "published"
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    factor_cache_hits: int = 0
+    elapsed_seconds: float = 0
 
 
 class EvidenceClaim(StrictModel):
@@ -118,6 +133,8 @@ class ResearchCard(StrictModel):
     output_tokens: int = 0
     cache_hit: bool = False
     generation_usage: dict[str, int] = Field(default_factory=dict)
+    facts: dict[str, Any] = Field(default_factory=dict)
+    elapsed_seconds: float = 0
 
 
 class TradeJournalEntry(StrictModel):

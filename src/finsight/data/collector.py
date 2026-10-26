@@ -1,0 +1,293 @@
+"""Incremental collection, with small per-stock tasks and reproducible captured versions."""
+from __future__ import annotations
+
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, timedelta
+from uuid import uuid4
+
+import numpy as np
+import pandas as pd
+
+from finsight.data.akshare_provider import AKShareProvider, date_column, normalize_symbol
+from finsight.data.demo import SAMPLE_CODES
+from finsight.data.quality import REQUIRED
+from finsight.data.requests import RequestBroker
+from finsight.data.store import SnapshotBundle, canonical
+from finsight.data.universe import MAINBOARD_PREFIXES, membership_id, universe_id
+from finsight.jobs import Jobs
+from finsight.models import MarketSnapshot, fingerprint
+
+
+def merge_observations(old: pd.DataFrame, new: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    if old.empty:
+        return canonical(new)
+    if new.empty:
+        return canonical(old)
+    # Unchanged observations keep their original first-fetch timestamp. Revisions get a new version.
+    columns = sorted((set(old.columns) | set(new.columns)) - {"fetched_at", "loaded_at"})
+    left, right = old.reindex(columns=columns), new.reindex(columns=columns)
+    old_hash = pd.util.hash_pandas_object(left, index=False)
+    new_hash = pd.util.hash_pandas_object(right, index=False)
+    fingerprints = dict(zip(pd.MultiIndex.from_frame(old[keys]), old_hash))
+    fetched = dict(zip(pd.MultiIndex.from_frame(old[keys]), old.get("fetched_at", pd.Series(index=old.index, dtype=str))))
+    new = new.copy()
+    if "fetched_at" in new:
+        for index, key, digest in zip(new.index, pd.MultiIndex.from_frame(new[keys]), new_hash):
+            if fingerprints.get(key) == digest:
+                new.at[index, "fetched_at"] = fetched.get(key, new.at[index, "fetched_at"])
+    return canonical(pd.concat([old, new], ignore_index=True).drop_duplicates(keys, keep="last"))
+
+
+class Collector(AKShareProvider):
+    def __init__(self, broker: RequestBroker, config: dict, base: SnapshotBundle | None = None):
+        super().__init__(broker.store.root, timeout=broker.timeout, retries=broker.retries)
+        self.broker, self.config, self.base = broker, config, base
+        self.jobs, self.job_id = Jobs(broker.store), broker.job_id
+        self.observations, self.observation_lock = {}, threading.Lock()
+        self.mainboard = config.get("mainboard", False)
+        self.sample_mode = not self.mainboard or bool(config.get("symbols"))
+        self.base_groups = {key: {s: f for s, f in base[key].groupby("symbol", sort=False)} if base is not None and "symbol" in base[key] else {}
+                            for key in ("prices", "financials", "valuations")}
+
+    def call(self, method: str, **kwargs) -> pd.DataFrame:
+        ttl = 86400 if self.sample_mode and method == "stock_individual_info_em" else None
+        frame = self.broker.call(method, cache_ttl=ttl, **kwargs)
+        with self.observation_lock:
+            self.observations[fingerprint({"method": method, "kwargs": kwargs})] = frame.attrs["fetched_at"]
+        return frame
+
+    def observed(self, method: str, **kwargs) -> str:
+        return self.observations.get(fingerprint({"method": method, "kwargs": kwargs}), self.captured_at.isoformat())
+
+    def stock_list(self):
+        pieces = []
+        missing = []
+        for market, method, kwargs, mapping in [
+            ("SH", "stock_info_sh_name_code", {"symbol": "主板A股"}, {"证券代码": "code", "证券简称": "name", "上市日期": "listed_on"}),
+            ("SZ", "stock_info_sz_name_code", {"symbol": "A股列表"}, {"A股代码": "code", "A股简称": "name", "A股上市日期": "listed_on"}),
+        ]:
+            try:
+                frame = self.call(method, **kwargs)
+                observed = frame.attrs["fetched_at"]
+                if market == "SZ":
+                    frame = frame[frame["板块"] == "主板"]
+                frame = frame.rename(columns=mapping)[["code", "name", "listed_on"]].copy()
+                frame["observed_at"] = observed
+                pieces.append(frame)
+            except (ValueError, KeyError):
+                missing.append(market)
+        if missing:
+            quote = self.call("stock_zh_a_spot_em")
+            observed = quote.attrs["fetched_at"]
+            quote = quote.rename(columns={"代码": "code", "名称": "name"})
+            quote["code"] = quote["code"].astype(str).str.zfill(6)
+            quote = quote[quote["code"].str.startswith(MAINBOARD_PREFIXES)].copy()
+            quote["_market"] = np.where(quote["code"].str.startswith("6"), "SH", "SZ")
+            quote = quote[quote["_market"].isin(missing)]
+            quote["listed_on"], quote["observed_at"] = None, observed
+            pieces.append(quote[["code", "name", "listed_on", "observed_at"]])
+            self.issues.append("部分交易所列表不可用，缺失市场采用当前全市场行情列表；上市日期逐股核实。")
+        frame = pd.concat(pieces, ignore_index=True)
+        frame["code"] = frame["code"].astype(str).str.zfill(6)
+        frame["symbol"] = frame["code"].map(normalize_symbol)
+        frame["listed_on"] = date_column(frame["listed_on"])
+        if not any(frame["symbol"].str.endswith(".SH")) or not any(frame["symbol"].str.endswith(".SZ")):
+            raise ValueError("mainboard stock list does not cover both exchanges")
+        return frame.drop_duplicates("symbol")
+
+    def _annual(self, year: int, calendar: pd.DataFrame) -> pd.DataFrame:
+        frame = self.call("stock_yjbb_em", date=f"{year}1231")
+        fetched = frame.attrs["fetched_at"]
+        frame = frame.rename(columns={"股票代码": "code", "净资产收益率": "roe",
+            "营业总收入-同比增长": "revenue_growth", "最新公告日期": "announcement_date"})
+        frame["symbol"] = frame["code"].astype(str).map(normalize_symbol)
+        frame["announcement_date"] = date_column(frame["announcement_date"])
+        frame["report_period"] = f"{year}-12-31"
+        frame["available_on"] = frame["announcement_date"].map(
+            lambda d: max(next((s for s in calendar["trade_date"] if s > str(d)), "9999-12-31"), fetched[:10]))
+        frame["version"] = "observed-" + fetched
+        frame["source"], frame["fetched_at"] = "akshare:stock_yjbb_em", fetched
+        return frame[["symbol", "report_period", "announcement_date", "available_on", "roe", "revenue_growth", "version", "source", "fetched_at"]]
+
+    def financial_history(self, symbol: str, start: date, day: date, calendar: pd.DataFrame):
+        frame = self.call("stock_financial_analysis_indicator_em", symbol=symbol, indicator="按报告期")
+        fetched = frame.attrs["fetched_at"]
+        frame = frame.rename(columns={"REPORT_DATE": "report_period", "NOTICE_DATE": "announcement_date",
+            "ROEJQ": "roe", "TOTALOPERATEREVETZ": "revenue_growth"})
+        frame["report_period"], frame["announcement_date"] = date_column(frame["report_period"]), date_column(frame["announcement_date"])
+        frame = frame[frame["report_period"].str.endswith("12-31") & (frame["announcement_date"] <= str(day)) &
+                      (frame["report_period"] >= f"{start.year - 2}-01-01")].copy()
+        frame["symbol"] = symbol
+        frame["available_on"] = frame["announcement_date"].map(
+            lambda d: max(next((s for s in calendar["trade_date"] if s > str(d)), "9999-12-31"), fetched[:10]))
+        frame["version"], frame["source"], frame["fetched_at"] = "observed-" + fetched, "akshare:stock_financial_analysis_indicator_em", fetched
+        return frame[["symbol", "report_period", "announcement_date", "available_on", "roe", "revenue_growth", "version", "source", "fetched_at"]]
+
+    def _bars(self, code: str, lower: str, day: str):
+        kwargs = dict(symbol=code, period="daily", start_date=lower.replace("-", ""), end_date=day.replace("-", ""))
+        raw = self.call("stock_zh_a_hist", **kwargs, adjust="")
+        raw_fetched = raw.attrs["fetched_at"]
+        raw = raw.rename(columns={"日期": "trade_date", "开盘": "open", "收盘": "close", "最高": "high", "最低": "low", "成交额": "amount", "成交量": "volume"})
+        adj = self.call("stock_zh_a_hist", **kwargs, adjust="hfq")
+        fetched = max(raw_fetched, adj.attrs["fetched_at"])
+        adj = adj.rename(columns={"日期": "trade_date", "收盘": "adj_close"})
+        raw["trade_date"], adj["trade_date"] = date_column(raw["trade_date"]), date_column(adj["trade_date"])
+        raw = raw.merge(adj[["trade_date", "adj_close"]], on="trade_date", how="left", validate="one_to_one")
+        raw = raw[raw["trade_date"].between(lower, day)].copy()
+        raw["symbol"] = normalize_symbol(code)
+        raw["volume"] = pd.to_numeric(raw["volume"], errors="coerce") * 100
+        # Zero volume alone does not certify a suspension; retain unknown states in missing coverage.
+        raw["suspended"] = pd.Series(False, index=raw.index, dtype="boolean").mask(raw["volume"].fillna(0).eq(0), pd.NA)
+        raw["prev_close"] = raw["close"].shift(1)
+        raw["limit_up"], raw["limit_down"] = float("nan"), float("nan")
+        raw["source"], raw["fetched_at"] = "akshare:stock_zh_a_hist", fetched
+        return raw[["symbol", "trade_date", "open", "high", "low", "close", "adj_close", "volume", "amount", "suspended", "prev_close", "limit_up", "limit_down", "source", "fetched_at"]]
+
+    def _symbol(self, stock, annual, start, day, calendar):
+        self.jobs.check_cancelled(self.job_id)
+        symbol, code, issues = stock["symbol"], stock["code"], []
+        observed = stock.get("observed_at") or self.observed("stock_individual_info_em", symbol=code, timeout=10)
+        industry = stock.get("industry")
+        try:
+            info = self.call("stock_individual_info_em", symbol=code, timeout=10)
+            industry_observed = info.attrs["fetched_at"]
+            values = dict(zip(info["item"], info["value"]))
+            industry = values.get("行业")
+            if pd.isna(stock.get("listed_on")):
+                value = pd.to_datetime(str(values.get("上市时间")).split(".")[0], format="%Y%m%d", errors="coerce")
+                stock["listed_on"] = None if pd.isna(value) else value.strftime("%Y-%m-%d")
+            observed = max(observed, industry_observed)
+        except (ValueError, KeyError) as exc:
+            issues.append(f"{symbol}: metadata: {exc}")
+        state = dict(symbol=symbol, name=stock["name"], industry=industry, listed_on=stock.get("listed_on"),
+            board="mainboard", is_st="ST" in stock["name"].upper(), is_delisting="退" in stock["name"],
+            known_on=observed[:10], is_member=True, source="akshare:observed-current-list", industry_source="stock_individual_info_em")
+        old_prices = self.base_groups["prices"].get(symbol, pd.DataFrame(columns=sorted(REQUIRED["prices"])))
+        old_vals = self.base_groups["valuations"].get(symbol, pd.DataFrame(columns=sorted(REQUIRED["valuations"])))
+        old_fin = self.base_groups["financials"].get(symbol, pd.DataFrame(columns=sorted(REQUIRED["financials"])))
+        listing = pd.to_datetime(state["listed_on"], errors="coerce")
+        structural = state["is_st"] or state["is_delisting"] or (pd.notna(listing) and listing + pd.DateOffset(years=2) > pd.Timestamp(day))
+        if structural:
+            return state, old_prices, old_vals, old_fin, issues
+        lower = str(start)
+        if not old_prices.empty:
+            prior = calendar[calendar["trade_date"] <= old_prices["trade_date"].max()]["trade_date"].tolist()
+            if prior:
+                lower = max(str(start), prior[max(0, len(prior) - 10)])
+        try:
+            new_prices = self._bars(code, lower, day)
+            if not old_prices.empty:
+                overlap = old_prices.merge(new_prices, on=["symbol", "trade_date"], suffixes=("_old", "_new"))
+                changed = any(not np.allclose(overlap[k + "_old"], overlap[k + "_new"], equal_nan=True, rtol=1e-10, atol=1e-10)
+                              for k in ("open", "high", "low", "close", "adj_close", "amount", "volume"))
+                if changed:
+                    sessions = calendar[calendar["trade_date"] <= day]["trade_date"].tolist()
+                    revised_lower = min(lower, sessions[max(0, len(sessions) - 61)])
+                    if revised_lower < lower:
+                        new_prices = self._bars(code, revised_lower, day)
+                    issues.append(f"{symbol}: price/adjustment revision detected; factor window refreshed")
+                # The first bar of a newly requested range has no predecessor in that response.
+                # Reuse its known prior close so an unchanged overlap does not look like a revision.
+                previous = old_prices.set_index("trade_date")["prev_close"]
+                first = new_prices["trade_date"] == new_prices["trade_date"].min()
+                new_prices.loc[first, "prev_close"] = new_prices.loc[first, "trade_date"].map(previous).fillna(
+                    new_prices.loc[first, "prev_close"])
+            prices = merge_observations(old_prices, new_prices, ["symbol", "trade_date"])
+        except (ValueError, KeyError) as exc:
+            prices = old_prices
+            issues.append(f"{symbol}: prices unavailable: {exc}")
+        try:
+            vals = self.call("stock_value_em", symbol=code)
+            fetched = vals.attrs["fetched_at"]
+            vals = vals.rename(columns={"数据日期": "trade_date", "PE(TTM)": "pe_ttm", "市净率": "pb"})
+            vals["trade_date"] = date_column(vals["trade_date"])
+            vals = vals[vals["trade_date"].between(str(start), day)].copy()
+            vals["symbol"], vals["source"], vals["fetched_at"] = symbol, "akshare:stock_value_em", fetched
+            vals = merge_observations(old_vals, vals[["symbol", "trade_date", "pe_ttm", "pb", "source", "fetched_at"]], ["symbol", "trade_date"])
+        except (ValueError, KeyError) as exc:
+            vals = old_vals
+            issues.append(f"{symbol}: valuation unavailable: {exc}")
+        fin = annual[annual["symbol"] == symbol] if not annual.empty else annual
+        if fin.empty:
+            try:
+                fin = self.financial_history(symbol, start, date.fromisoformat(day), calendar)
+            except (ValueError, KeyError) as exc:
+                issues.append(f"{symbol}: financials unavailable: {exc}")
+        if not fin.empty or not old_fin.empty:
+            fin = pd.concat([f for f in (old_fin, fin) if not f.empty], ignore_index=True)
+            fin = fin.sort_values("available_on", kind="stable").drop_duplicates(
+                ["symbol", "report_period", "announcement_date", "roe", "revenue_growth"], keep="first")
+        return state, prices, vals, fin, issues
+
+    def fetch(self):
+        self.jobs.update(self.job_id, progress={"phase": "calendar_and_membership"})
+        calendar = self.calendar()
+        now = self.broker.clock()
+        cutoff = now.date() if now.hour >= 18 else now.date() - timedelta(days=1)
+        requested = date.fromisoformat(self.config["as_of"]) if self.config.get("as_of") else cutoff
+        if requested > cutoff or calendar["trade_date"].max() < str(requested):
+            raise ValueError("requested session is not complete or exchange calendar is stale")
+        day = calendar.loc[calendar["trade_date"] <= str(requested), "trade_date"].max()
+        start = date.fromisoformat(self.config["start"]) if self.config.get("start") else date.fromisoformat(day) - timedelta(days=430)
+        if str(start) >= day:
+            raise ValueError("start must precede snapshot date")
+        self.config["as_of"], self.config["start"] = day, str(start)
+        self.jobs.update(self.job_id, config=self.config)
+        symbols = self.config.get("symbols")
+        stocks = self.stock_list() if not self.sample_mode else self.sample_list(symbols or list(SAMPLE_CODES))
+        limit = self.config.get("limit")
+        if limit and len(stocks) > limit:
+            stocks = stocks.sort_values("symbol").iloc[np.linspace(0, len(stocks) - 1, limit, dtype=int)].copy()
+        if stocks.empty:
+            raise ValueError("empty stock universe")
+        members = sorted(set(stocks["symbol"]))
+        uid = universe_id(self.mainboard, [normalize_symbol(s) for s in symbols] if symbols else
+                          (None if self.mainboard else [normalize_symbol(s) for s in SAMPLE_CODES]), limit)
+        if self.base and self.base.meta.universe_id != uid:
+            raise ValueError("base snapshot belongs to a different universe definition")
+        self.jobs.update(self.job_id, progress={"phase": "financial_bulk", "symbols_total": len(stocks),
+                                              "universe_id": uid, "mode": "incremental" if self.base else "bootstrap"})
+        annual = []
+        if self.mainboard:
+            lower_year = date.fromisoformat(day).year - 2 if self.base else start.year - 2
+            for year in range(lower_year, date.fromisoformat(day).year):
+                try:
+                    annual.append(self._annual(year, calendar))
+                except (ValueError, KeyError) as exc:
+                    self.issues.append(f"annual {year}: {exc}")
+        annual = pd.concat(annual, ignore_index=True) if annual else pd.DataFrame(columns=sorted(REQUIRED["financials"]))
+        results = []
+        with ThreadPoolExecutor(max_workers=self.broker.workers) as executor:
+            futures = [executor.submit(self._symbol, row, annual, start, day, calendar) for row in stocks.to_dict("records")]
+            for future in as_completed(futures):
+                self.jobs.check_cancelled(self.job_id)
+                results.append(future.result())
+                self.jobs.update(self.job_id, progress={"phase": "per_stock", "symbols_completed": len(results),
+                                                       "effective_workers": self.broker.limit})
+        results.sort(key=lambda r: r[0]["symbol"])
+        states = pd.DataFrame([r[0] for r in results])
+        if self.base:
+            old_states = self.base["universe"]
+            # Keep historical states and append explicit membership removals, never infer a delisting.
+            previous = old_states.sort_values("known_on", kind="stable").drop_duplicates("symbol", keep="last")
+            removed = previous[~previous["symbol"].isin(members)].copy()
+            removed["is_member"], removed["known_on"] = False, max(stocks.get("observed_at", pd.Series([now.isoformat()])).dropna())[:10]
+            states = pd.concat([old_states, states, removed], ignore_index=True).drop_duplicates(["symbol", "known_on"], keep="last")
+        tables = {"universe": states, "calendar": calendar}
+        for key, pos in (("prices", 1), ("valuations", 2), ("financials", 3)):
+            parts = [r[pos] for r in results if not r[pos].empty]
+            tables[key] = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=sorted(REQUIRED[key]))
+        benchmark = self.call("stock_zh_index_daily_em", symbol="sh000300", start_date=start.strftime("%Y%m%d"), end_date=day.replace("-", ""))
+        benchmark = benchmark.rename(columns={"date": "trade_date"})
+        benchmark["trade_date"] = date_column(benchmark["trade_date"])
+        tables["benchmark"] = benchmark[benchmark["trade_date"].between(str(start), day)][["trade_date", "close"]]
+        tables["actions"] = self.base["actions"] if self.base else pd.DataFrame(columns=sorted(REQUIRED["actions"]))
+        issues = [*self.issues, *[issue for r in results for issue in r[4]],
+            "历史股票池、财务修订、涨跌停价及公司行动尚未核验；当前覆盖率不等于历史研究通过。"]
+        full = self.mainboard and not symbols and not limit
+        return SnapshotBundle(MarketSnapshot(snapshot_id=f"akshare-{day}-{uuid4().hex[:10]}", as_of=date.fromisoformat(day),
+            captured_at=self.broker.clock(), source="akshare", schema_version=2, universe_id=uid,
+            membership_id=membership_id(members), membership_symbols=members, universe_complete=full, job_id=self.job_id,
+            universe_scope="current mainboard" if full else f"{'mainboard validation' if self.mainboard else 'sample'}:{len(stocks)}",
+            quality_issues=issues), tables)

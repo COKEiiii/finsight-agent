@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,7 @@ class Store:
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
+            db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS snapshots (
                     snapshot_id TEXT PRIMARY KEY, as_of TEXT NOT NULL, captured_at TEXT NOT NULL,
@@ -64,6 +66,30 @@ class Store:
                 CREATE TABLE IF NOT EXISTS research_cache (cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS journal (event_id TEXT PRIMARY KEY, account_id TEXT NOT NULL,
                     trade_date TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT DEFAULT CURRENT_TIMESTAMP);
+                INSERT OR IGNORE INTO schema_migrations(version) VALUES (2);
+                CREATE TABLE IF NOT EXISTS factor_cache (cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS jobs (
+                    job_id TEXT PRIMARY KEY, identity TEXT NOT NULL, status TEXT NOT NULL,
+                    config TEXT NOT NULL, progress TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, pid INTEGER,
+                    snapshot_id TEXT, error TEXT);
+                CREATE UNIQUE INDEX IF NOT EXISTS jobs_active_identity ON jobs(identity)
+                    WHERE status IN ('queued','running','cancelling');
+                CREATE TABLE IF NOT EXISTS job_requests (
+                    job_id TEXT NOT NULL, request_id TEXT NOT NULL, method TEXT NOT NULL,
+                    kwargs TEXT NOT NULL, status TEXT NOT NULL, path TEXT, fetched_at TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0, elapsed REAL NOT NULL DEFAULT 0,
+                    bytes INTEGER NOT NULL DEFAULT 0, cache_hit INTEGER NOT NULL DEFAULT 0,
+                    error_kind TEXT, error TEXT, PRIMARY KEY(job_id,request_id));
+                CREATE TABLE IF NOT EXISTS request_cache (
+                    cache_key TEXT PRIMARY KEY, path TEXT NOT NULL, fetched_at TEXT NOT NULL,
+                    sha256 TEXT NOT NULL, bytes INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS collector_control (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS publications (
+                    universe_id TEXT NOT NULL, trade_date TEXT NOT NULL, snapshot_id TEXT NOT NULL,
+                    screen_run_id TEXT NOT NULL, coverage REAL NOT NULL,
+                    PRIMARY KEY(universe_id,trade_date));
             """)
 
     @contextmanager
@@ -91,11 +117,18 @@ class Store:
         stage = Path(tempfile.mkdtemp(prefix=".snapshot-", dir=parent))
         try:
             hashes = {}
+            manifests = {}
             for name in TABLES:
+                if bundle.meta.schema_version >= 2:
+                    manifests[name] = self._save_partitions(name, bundle[name])
+                    hashes[name] = hashlib.sha256(json.dumps(manifests[name], sort_keys=True).encode()).hexdigest()
+                    continue
                 file = stage / f"{name}.parquet"
                 bundle[name].to_parquet(file, index=False)
                 hashes[name] = hashlib.sha256(file.read_bytes()).hexdigest()
             bundle.meta.table_hashes = hashes
+            if manifests:
+                (stage / "manifest.json").write_text(json.dumps({"version": 2, "tables": manifests}, sort_keys=True), encoding="utf-8")
             (stage / "metadata.json").write_text(bundle.meta.model_dump_json(indent=2), encoding="utf-8")
             stage.rename(target)
             with self.connect() as db:
@@ -118,7 +151,8 @@ class Store:
             rows = db.execute("SELECT metadata FROM snapshots ORDER BY as_of DESC, captured_at DESC").fetchall()
         return [MarketSnapshot.model_validate_json(r["metadata"]) for r in rows]
 
-    def load_snapshot(self, snapshot_id: str | None = None) -> SnapshotBundle:
+    def load_snapshot(self, snapshot_id: str | None = None, date_range: tuple[str, str] | None = None,
+                      columns: dict[str, list[str]] | None = None, table_names: tuple[str, ...] | None = None) -> SnapshotBundle:
         if snapshot_id is None:
             snapshots = self.snapshots()
             if not snapshots:
@@ -126,13 +160,91 @@ class Store:
             snapshot_id = snapshots[0].snapshot_id
         path = self.root / "snapshots" / safe_id(snapshot_id)
         meta = MarketSnapshot.model_validate_json((path / "metadata.json").read_text(encoding="utf-8"))
+        manifest = json.loads((path / "manifest.json").read_text()) if (path / "manifest.json").exists() else None
         tables = {}
         for name in TABLES:
+            if table_names is not None and name not in table_names:
+                continue
+            if manifest:
+                refs = manifest["tables"][name]
+                if hashlib.sha256(json.dumps(refs, sort_keys=True).encode()).hexdigest() != meta.table_hashes[name]:
+                    raise ValueError(f"snapshot integrity check failed: {name} manifest")
+                frames = []
+                for ref in refs:
+                    if date_range and name in {"prices", "valuations", "benchmark"} and ref.get("date_min"):
+                        if ref["date_max"] < date_range[0] or ref["date_min"] > date_range[1]:
+                            continue
+                    file = self.root / "objects" / (ref["sha256"] + ".parquet")
+                    if hashlib.sha256(file.read_bytes()).hexdigest() != ref["sha256"]:
+                        raise ValueError(f"snapshot integrity check failed: {name} object")
+                    wanted = [c for c in (columns or {}).get(name, ref["columns"]) if c in ref["columns"]]
+                    frames.append(pd.read_parquet(file, columns=wanted))
+                frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=refs[0]["columns"])
+                if date_range and name in {"prices", "valuations", "benchmark"}:
+                    frame = frame[frame["trade_date"].between(*date_range)]
+                tables[name] = canonical(frame)
+                continue
             file = path / f"{name}.parquet"
             if hashlib.sha256(file.read_bytes()).hexdigest() != meta.table_hashes[name]:
                 raise ValueError(f"snapshot integrity check failed: {name}")
             tables[name] = pd.read_parquet(file)
+            if date_range and name in {"prices", "valuations", "benchmark"}:
+                tables[name] = tables[name][tables[name]["trade_date"].between(*date_range)]
         return SnapshotBundle(meta, tables)
+
+    def _save_partitions(self, name: str, frame: pd.DataFrame) -> list[dict]:
+        folder = self.root / "objects"
+        folder.mkdir(exist_ok=True)
+        frame = canonical(frame)
+        groups = []
+        if not frame.empty and "trade_date" in frame and name in {"prices", "valuations", "benchmark"}:
+            work = frame.assign(_month=frame["trade_date"].str[:7])
+            work["_bucket"] = work["symbol"].str[:6].astype(int) % 32 if "symbol" in work else 0
+            groups = [part.drop(columns=["_month", "_bucket"]) for _, part in work.groupby(["_month", "_bucket"], sort=True)]
+        elif not frame.empty and "symbol" in frame:
+            groups = [part.drop(columns="_bucket") for _, part in frame.assign(
+                _bucket=frame["symbol"].str[:6].astype(int) % 32).groupby("_bucket", sort=True)]
+        else:
+            groups = [frame]
+        refs = []
+        for part in groups:
+            part.attrs = {}
+            # Serialise in memory before assigning the content address; existing objects remain untouched.
+            data = part.to_parquet(index=False)
+            digest = hashlib.sha256(data).hexdigest()
+            file = folder / (digest + ".parquet")
+            if not file.exists():
+                temp = folder / (".object-" + uuid4().hex)
+                temp.write_bytes(data)
+                temp.replace(file)
+            refs.append({"sha256": digest, "rows": len(part), "columns": list(part.columns),
+                "date_min": part["trade_date"].min() if "trade_date" in part and len(part) else None,
+                "date_max": part["trade_date"].max() if "trade_date" in part and len(part) else None})
+        return refs
+
+    def latest(self, universe_id: str | None = None, published_only: bool = False) -> MarketSnapshot | None:
+        matches = [s for s in self.snapshots() if (not universe_id or s.universe_id == universe_id) and
+                   (not published_only or s.publishable and s.publication_status == "published")]
+        if universe_id is None and published_only:
+            return next((s for s in matches if s.universe_complete and not s.synthetic), None) or (matches[0] if matches else None)
+        return matches[0] if matches else None
+
+    def factor(self, key: str, payload: dict | None = None) -> dict | None:
+        with self.connect() as db:
+            if payload is not None:
+                db.execute("INSERT OR REPLACE INTO factor_cache VALUES (?,?)", (key, json.dumps(payload, ensure_ascii=False, allow_nan=False)))
+                return payload
+            row = db.execute("SELECT payload FROM factor_cache WHERE cache_key=?", (key,)).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def reserve_request(self, interval: float) -> float:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT value FROM collector_control WHERE key='next_request'").fetchone()
+            now = time.time()
+            start = max(now, float(row["value"]) if row else now)
+            db.execute("INSERT OR REPLACE INTO collector_control VALUES ('next_request',?)", (str(start + interval),))
+        return max(0, start - now)
 
     def save_run(self, kind: str, snapshot_id: str, config: StrategyConfig, payload: dict,
                  run_id: str | None = None) -> str:
@@ -170,3 +282,12 @@ class Store:
         path = self.root / "exports" / safe_id(run_id)
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+
+def canonical(frame: pd.DataFrame) -> pd.DataFrame:
+    frame = frame.copy()
+    frame.attrs = {}
+    keys = [c for c in ("symbol", "trade_date", "known_on", "report_period", "available_on", "ex_date") if c in frame]
+    if keys:
+        frame = frame.sort_values(keys, kind="stable")
+    return frame.reindex(columns=sorted(frame.columns)).reset_index(drop=True)

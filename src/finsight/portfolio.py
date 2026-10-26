@@ -30,14 +30,15 @@ def portfolio_plan(result: ScreeningResult, config: StrategyConfig, capital: flo
         raise ValueError("capital must be positive and finite")
     sessions = sorted(calendar["trade_date"].astype(str))
     next_day = next((d for d in sessions if d > str(result.as_of)), None)
-    due = next_day is not None and next_day[:7] != str(result.as_of)[:7]
+    due = result.publication_status == "published" and next_day is not None and next_day[:7] != str(result.as_of)[:7]
     targets = select_targets(result.candidates, config)
     for item in targets:
         item["reference_quantity"] = math.floor(capital * item["target_weight"] / item["close"] / 100) * 100
     return {"run_id": result.run_id, "signal_date": str(result.as_of), "execution_date": next_day if due else None,
             "rebalance_due": due, "capital": capital, "targets": targets,
             "target_cash_weight": 1 - sum(x["target_weight"] for x in targets),
-            "note": "数量依据收盘价估算；人工核对持仓、费用和实际成交。非月末仅供研究参考。"}
+            "publication_status": result.publication_status,
+            "note": "预览结果不可作为执行计划。" if result.publication_status != "published" else "数量依据收盘价估算；人工核对持仓、费用和实际成交。非月末仅供研究参考。"}
 
 
 def import_journal(store: Store, text: str) -> dict:
@@ -65,6 +66,8 @@ def import_journal(store: Store, text: str) -> dict:
             if run is None or run["kind"] != "screen":
                 raise ValueError("journal entries must reference an existing screening run")
             screening = ScreeningResult.model_validate_json(run["payload"])
+            if screening.publication_status != "published":
+                raise ValueError("unpublished previews cannot authorize simulation journal entries")
             if entry.strategy_version != screening.strategy_version or entry.trade_date <= screening.as_of:
                 raise ValueError("journal strategy/date conflicts with the linked signal")
             db.execute("INSERT INTO journal VALUES (?,?,?,?)", (entry.event_id, entry.account_id,

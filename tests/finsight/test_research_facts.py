@@ -1,0 +1,76 @@
+from datetime import date
+
+import pytest
+
+from finsight.research import demo_content, evidence_for, render_card, research_candidate, validate_content
+from finsight.service import FinSight
+
+
+class Answers:
+    provider = "ollama"
+    model = "fixture-local"
+    base_url = "http://fixture"
+
+    def __init__(self, values):
+        self.values = iter(values)
+
+    def complete(self, messages, tools, final=False):
+        import json
+        return {"message": {"role": "assistant", "content": json.dumps(next(self.values), ensure_ascii=False), "tool_calls": []}}
+
+
+def ready(tmp_path):
+    service = FinSight(tmp_path)
+    snapshot = service.sync("demo", date(2025, 12, 31), date(2024, 1, 2))["snapshot_id"]
+    result = service.screen(snapshot)
+    candidate = result.candidates[0]
+    return service, result, candidate, evidence_for(result, candidate)
+
+
+def test_typed_facts_bound_to_snapshot_with_units_sources_and_program_render(tmp_path):
+    service, result, candidate, facts = ready(tmp_path)
+    assert result.schema_version == 2
+    assert facts["financials.roe"]["unit"] == "%"
+    assert facts["financials.roe"]["snapshot_id"] == result.snapshot_id
+    assert facts["financials.roe"]["known_at"] == candidate["available_on"]
+    assert facts["valuation.pe_ttm"]["source"] == candidate["valuation_source"]
+    card = research_candidate(result, candidate, service.store, demo=True)
+    assert card.facts == facts
+    assert "| financials.roe |" in render_card(card)
+
+
+def test_metric_and_unit_mismatch_rejected_even_if_number_exists_elsewhere(tmp_path):
+    _, _, candidate, facts = ready(tmp_path)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["reasons"][0] = {"text": "净资产收益率上升。", "evidence_ids": ["financials.revenue_growth"]}
+    with pytest.raises(ValueError, match="field/evidence mismatch: roe"):
+        validate_content(payload, facts)
+    payload["reasons"][0] = {"text": "净资产收益率为百分之二十。", "evidence_ids": ["financials.roe"]}
+    assert validate_content(payload, facts)
+    payload["reasons"][0]["text"] = "净资产收益率为20元。"
+    with pytest.raises(ValueError, match="narrative contains a number"):
+        validate_content(payload, facts)
+
+
+def test_unsupported_valuation_and_mismatched_research_binding(tmp_path):
+    service, result, candidate, facts = ready(tmp_path)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["reasons"][0] = {"text": "估值合理。", "evidence_ids": ["valuation.pe_ttm"]}
+    with pytest.raises(ValueError, match="无法判断"):
+        validate_content(payload, facts)
+    good = demo_content(candidate, facts).model_dump()
+    adapter = Answers([good])
+    first = research_candidate(result, candidate, service.store, adapter)
+    assert first.status == "completed"
+    another = result.model_copy(update={"run_id": "another-screen-run"})
+    second = research_candidate(another, candidate, service.store, adapter)
+    assert second.cache_hit and second.run_id == another.run_id and second.facts == first.facts
+
+
+def test_invalid_field_response_repairs_within_three_requests(tmp_path):
+    service, result, candidate, facts = ready(tmp_path)
+    good = demo_content(candidate, facts).model_dump()
+    bad = demo_content(candidate, facts).model_dump()
+    bad["reasons"][0] = {"text": "营收增长。", "evidence_ids": ["financials.roe"]}
+    card = research_candidate(result, candidate, service.store, Answers([bad, good]))
+    assert card.status == "completed" and card.llm_calls == 2

@@ -14,6 +14,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from finsight.data.quality import audit
+from finsight.jobs import Jobs
 from finsight.models import ScreeningResult, StrategyConfig, TradeJournalEntry
 from finsight.portfolio import import_journal, journal_entries, portfolio_plan
 from finsight.research import ChatAdapter, render_card
@@ -34,6 +35,7 @@ def main():
     st.title("FinSight A-Share")
     st.caption("A 股多因子筛选 · 本地 AI 研究 · 模拟组合复盘")
     service = FinSight(args.data_dir)
+    jobs = Jobs(service.store)
     with st.sidebar:
         st.header("研究工作区")
         st.caption("本地单用户 · strategy_v0.1")
@@ -43,29 +45,65 @@ def main():
             st.session_state["snapshot_choice"] = created["snapshot_id"]
             st.rerun()
         st.caption("演示数据使用虚构公司和工作日日历。")
-        universe = st.selectbox("真实数据范围", ["20 只样本", "沪深主板"])
+        universe = st.selectbox("真实数据范围", ["20 只样本", "主板验证 · 100 只", "主板验证 · 500 只", "沪深主板"])
         if st.button("更新 AKShare 数据", width="stretch"):
             try:
-                with st.spinner("采集、校验并保存快照…"):
-                    quality = service.sync("akshare", mainboard=universe == "沪深主板")
-                st.session_state["snapshot_choice"] = quality["snapshot_id"]
-                if quality["publishable"]:
-                    st.success("快照已保存")
-                else:
-                    st.error("快照校验未通过，请查看数据状态。")
+                job = service.sync("akshare", mainboard=universe != "20 只样本",
+                    limit={"主板验证 · 100 只": 100, "主板验证 · 500 只": 500}.get(universe), background=True)
+                st.session_state["job_choice"] = job["job_id"]
                 st.rerun()
             except (ValueError, OSError, KeyError) as exc:
                 st.error(str(exc))
+        @st.fragment(run_every="5s")
+        def collection_status():
+            recent = jobs.list()[:20]
+            if not recent:
+                return
+            by_job = {job["job_id"]: job for job in recent}
+            job_id = st.selectbox("采集任务", list(by_job), key="job_choice",
+                format_func=lambda identifier: f"{by_job[identifier]['status']} · {by_job[identifier]['config']['universe_id'][:12]} · {identifier[:8]}")
+            job = by_job[job_id]
+            progress, requests = job["progress"], job["requests"]
+            done, total = progress.get("symbols_completed", 0), progress.get("symbols_total", 0)
+            if total:
+                st.progress(min(done / total, 1.0), text=f"股票 {done}/{total} · {progress.get('phase', job['status'])}")
+            st.caption(f"请求成功 {requests['completed']} · 失败 {requests['failed']} · 缓存命中 {requests['cache_hits']} · 请求耗时 {requests['request_seconds']:.1f} 秒")
+            coverage = progress.get("coverage", {})
+            if coverage:
+                st.caption(f"覆盖率 {coverage.get('coverage', 0):.2%} · {progress.get('publication_status', '预览')}")
+            if job["error"]:
+                st.error(job["error"])
+            if job["status"] in {"failed", "cancelled", "partial"} and st.button("恢复该任务", key=f"resume_{job_id}"):
+                service.sync("akshare", resume=job_id, background=True)
+                st.rerun()
+            if job["status"] in {"queued", "running"} and st.button("取消该任务", key=f"cancel_{job_id}"):
+                jobs.cancel(job_id)
+                st.rerun()
+            if job["snapshot_id"] and st.button("查看任务快照", key=f"open_{job_id}"):
+                st.session_state["snapshot_choice"] = job["snapshot_id"]
+                st.rerun()
+        collection_status()
         snapshots = service.store.snapshots()
         if not snapshots:
             st.info("先创建演示数据，或更新真实数据。")
             st.stop()
         by_id = {s.snapshot_id: s for s in snapshots}
-        snapshot_id = st.selectbox("数据快照", list(by_id), format_func=lambda s: (
-            f"{'演示' if by_id[s].synthetic else 'AKShare'} · {by_id[s].as_of} · {s[-6:]}"), key="snapshot_choice")
+        preferred = service.store.latest(published_only=True)
+        choices = list(by_id)
+        if preferred and preferred.snapshot_id in choices:
+            choices.remove(preferred.snapshot_id)
+            choices.insert(0, preferred.snapshot_id)
+        snapshot_id = st.selectbox("数据快照", choices, format_func=lambda s: (
+            f"{'演示' if by_id[s].synthetic else 'AKShare'} · {by_id[s].as_of} · "
+            f"{by_id[s].publication_status} · {s[-6:]}"), key="snapshot_choice")
         st.caption(f"快照：{snapshot_id}")
-    bundle = service.store.load_snapshot(snapshot_id)
-    quality = audit(bundle)
+    metadata = by_id[snapshot_id]
+    quality_file = service.store.root / "snapshots" / snapshot_id / "quality.json"
+    full = service.store.load_snapshot(snapshot_id, table_names=("calendar",))
+    sessions = sorted(full["calendar"]["trade_date"].loc[full["calendar"]["trade_date"] <= str(metadata.as_of)])
+    lower = sessions[max(0, len(sessions) - 61)] if sessions else str(metadata.as_of)
+    bundle = service.store.load_snapshot(snapshot_id, date_range=(lower, str(metadata.as_of)))
+    quality = json.loads(quality_file.read_text(encoding="utf-8")) if quality_file.exists() else audit(bundle)
     if bundle.meta.synthetic:
         st.info("当前为合成演示数据；图表与选股结果用于展示软件流程。")
     if not quality["research_eligible"]:
@@ -74,7 +112,8 @@ def main():
     columns[0].metric("数据日期", str(bundle.meta.as_of))
     columns[1].metric("股票范围", len(set(bundle["universe"]["symbol"])))
     columns[2].metric("行情记录", f"{len(bundle['prices']):,}")
-    columns[3].metric("发布状态", "可选股" if quality["publishable"] else "数据待修复")
+    columns[3].metric("发布状态", {"published": "已发布", "preview": "仅预览", "blocked": "阻止发布"}.get(
+        quality.get("publication_status"), "可选股" if quality["publishable"] else "数据待修复"))
     data_tab, rank_tab, research_tab, portfolio_tab = st.tabs(["数据状态", "候选排行榜", "研究卡", "组合与绩效"])
     screen_runs = [r for r in service.store.runs("screen") if r["snapshot_id"] == snapshot_id]
     selected = None
@@ -86,6 +125,17 @@ def main():
         st.write(bundle.meta.universe_scope)
         st.dataframe(pd.DataFrame([{"数据表": k, "记录数": v} for k, v in quality["table_rows"].items()]),
                      hide_index=True, width="stretch")
+        coverage = quality.get("coverage", {})
+        if coverage:
+            st.metric("可完整判定的覆盖率", f"{coverage.get('coverage', 0):.2%}", help="已确认的 ST、新股等规则排除项不进入分母；数据缺失和接口失败仍进入分母。")
+            st.caption(f"判定 {coverage.get('evaluated', 0)} / 应判定 {coverage.get('required', 0)} · 发布门槛 98%")
+            industry = coverage.get("by_industry", {})
+            if industry:
+                st.dataframe(pd.DataFrame([{"行业": key, **value} for key, value in industry.items()]), hide_index=True, width="stretch")
+            missing = coverage.get("missing", [])
+            if missing:
+                with st.expander(f"数据缺口（{len(missing)} 只）"):
+                    st.dataframe(pd.DataFrame(missing), hide_index=True, width="stretch")
         for issue in quality["issues"]:
             st.write("• " + issue)
         st.write("尚未通过的历史核验项：", ", ".join(quality["missing_research_checks"]) or "无")
@@ -97,14 +147,16 @@ def main():
     with rank_tab:
         st.subheader("固定规则候选股")
         st.caption("年报质量 40% · 趋势 40% · 估值 20%；同一快照与配置可复现。")
-        if st.button("运行选股", type="primary", disabled=not quality["publishable"]):
+        if st.button("运行选股", type="primary", disabled=quality.get("publication_status") == "blocked"):
             try:
-                selected = service.screen(snapshot_id)
+                selected = service.screen(snapshot_id, preview=not quality["publishable"])
                 st.rerun()
             except (ValueError, KeyError) as exc:
                 st.error(str(exc))
         if selected:
-            st.caption(f"选股记录：{selected.run_id} · 合格 {selected.eligible_count}/{selected.universe_count}")
+            st.caption(f"选股记录：{selected.run_id} · {selected.publication_status} · 合格 {selected.eligible_count}/{selected.universe_count}")
+            if selected.publication_status != "published":
+                st.warning("当前榜单仅供预览，不能生成正式模拟调仓指令。")
             if selected.candidates:
                 table = pd.DataFrame(selected.candidates)
                 st.dataframe(table[["rank", "symbol", "name", "industry", "score", "roe", "revenue_growth",
@@ -137,7 +189,8 @@ def main():
                 st.error(f"{failed} 张研究卡未成功生成，选股结果已保留。")
             else:
                 st.success("研究卡已保存")
-        research_runs = [r for r in service.store.runs("research") if r["snapshot_id"] == snapshot_id]
+        research_runs = [r for r in service.store.runs("research") if selected and
+                         json.loads(r["payload"]).get("screen_run_id") == selected.run_id]
         if research_runs:
             record = json.loads(research_runs[0]["payload"])
             from finsight.models import ResearchCard

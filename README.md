@@ -49,11 +49,30 @@ DEEPSEEK_MODEL=deepseek-flash
 
 也可显式执行 `finsight research --run RUN_ID --provider deepseek`。API Key 只从环境读取，不保存到报告或数据库。
 
+## v0.2 全主板采集与发布
+
+建议先完成验证批次，再启动全市场任务。采集在后台运行；中断后从已保存的请求继续。默认由 4 个常驻工作进程处理，所有进程合计每秒最多发起 1 个新请求；单股超时 30 秒，批量超时至少 120 秒，失败最多重试 2 次（等待 5、30 秒）。
+
+```bash
+finsight sync --provider akshare --universe mainboard --limit 100 --background
+finsight jobs list
+finsight jobs show JOB_ID
+finsight jobs resume JOB_ID
+finsight sync --provider akshare --universe mainboard --limit 500 --background
+finsight sync --provider akshare --universe mainboard --background
+```
+
+`--limit` 批次使用独立的股票池定义与成员清单，不能算作全主板榜单。完成任务后会自动校验并选股。已确认的 ST、新股等规则排除单列；接口失败、未知交易状态、缺失财报计入应判定分母。可完整判定的比例达到 98% 才发布当期榜单；低于门槛的结果只能用 `finsight screen --snapshot SNAPSHOT_ID --preview` 查阅。界面展示全市场与行业覆盖率、缺口、请求次数、缓存命中和恢复入口。历史回测可信度仍单独验收。预览榜单不能生成正式模拟调仓记录。
+
+新快照引用不可变的 Parquet 分区；旧版快照和运行记录继续可读。日常更新拉取缺失区间并重取最近 10 个交易日；估值接口目前返回单股历史，程序只在本地截取和缓存，没有宣称服务端增量。原始首次抓取时间与缓存读取时间分开保存，修订值不会被提前用于选股。
+
+全主板第一次完成后，macOS 增设 18:15 试运行任务。只有连续 5 个真实交易日的完整股票池、覆盖率达标且榜单已发布，才把原 18:05 正式任务切换到全主板。休眠或上游异常会使连续天数重新计数；系统不会补造历史快照。
+
 ## 数据采集
 
 ```bash
 finsight sync --provider akshare                     # 20 只跨行业样本
-finsight sync --provider akshare --universe mainboard # 完整当前沪深主板，耗时较长
+finsight sync --provider akshare --universe mainboard --background # 完整当前沪深主板，可能跨多次任务完成
 finsight sync --provider akshare --symbols 600036,000333
 finsight screen --snapshot SNAPSHOT_ID
 finsight status
@@ -61,7 +80,7 @@ finsight status
 
 真实数据收盘后北京时间 18:00 起更新。默认历史预热窗口为 430 天，可用 `--start 2022-01-01` 扩大。使用交易所股票列表、日线、年报业绩、单股历史 PE-TTM/PB 和沪深 300 指数，不用动态 PE 冒充 PE-TTM。各接口有进程级超时、有限重试、原始结果缓存和抓取时间；上游失效会显示错误，不替换成演示数据。
 
-快照为追加保存的 Parquet 和元数据，并核验文件哈希。财报保存报告期、公告日、首次可见日及版本。日期精度的公告保守地从下一交易日使用，新抓取的修订数据不会回填到其首次观测之前。今日股票状态不冒充历史状态。
+快照为追加保存的 Parquet 分区清单和元数据，并核验文件哈希。财报保存报告期、公告日、首次可见日及版本。日期精度的公告保守地从下一交易日使用，新抓取的修订数据不会回填到其首次观测之前。今日股票状态不冒充历史状态。
 
 持续采集：
 

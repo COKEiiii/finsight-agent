@@ -18,7 +18,7 @@ REQUIRED = {
 }
 
 
-def audit(bundle: SnapshotBundle) -> dict:
+def audit(bundle: SnapshotBundle, config=None) -> dict:
     fatal, issues = [], list(bundle.meta.quality_issues)
     for key in TABLES:
         if key not in bundle.tables or not REQUIRED[key].issubset(bundle[key].columns):
@@ -53,17 +53,26 @@ def audit(bundle: SnapshotBundle) -> dict:
         bad = bundle["prices"]
         numeric = bad[["open", "high", "low", "close", "amount", "volume"]].apply(pd.to_numeric, errors="coerce")
         if not np.isfinite(numeric).all().all():
-            fatal.append("nonfinite raw price/volume observations")
+            (issues if bundle.meta.schema_version >= 2 else fatal).append("nonfinite raw price/volume observations")
         bad = numeric
         bad = bad[(bad["close"] <= 0) | (bad["open"] <= 0) | (bad["amount"] < 0) |
                   (bad["volume"] < 0) |
                   (bad["high"] < bad[["open", "close"]].max(axis=1)) |
                   (bad["low"] > bad[["open", "close"]].min(axis=1))]
         if not bad.empty:
-            fatal.append(f"{len(bad)} invalid OHLC/amount observations")
+            (issues if bundle.meta.schema_version >= 2 else fatal).append(f"{len(bad)} invalid OHLC/amount observations")
         if bundle["actions"].duplicated(["symbol", "ex_date"]).any():
             fatal.append("duplicate corporate action keys; combine cash/split terms into one event")
-    bundle.meta.publishable = bundle.meta.publishable and not fatal
+    coverage = {}
+    if bundle.meta.schema_version >= 2 and all(key in bundle.tables and REQUIRED[key].issubset(bundle[key].columns) for key in TABLES):
+        from finsight.factors import coverage_report, evaluate
+        from finsight.models import StrategyConfig
+        frame, exclusions = evaluate(bundle, bundle.meta.as_of, config or StrategyConfig())
+        coverage = coverage_report(bundle, frame, exclusions)
+        bundle.meta.coverage = {key: value for key, value in coverage.items() if key != "missing"}
+        bundle.meta.coverage["details_ref"] = "quality.json#coverage/missing"
+    bundle.meta.publishable = bundle.meta.publishable and not fatal and (not coverage or coverage["meets_threshold"])
+    bundle.meta.publication_status = "blocked" if fatal else ("published" if bundle.meta.publishable else "preview")
     bundle.meta.quality_issues = list(dict.fromkeys(issues + fatal))
     return {
         "snapshot_id": bundle.meta.snapshot_id, "as_of": str(bundle.meta.as_of),
@@ -73,6 +82,7 @@ def audit(bundle: SnapshotBundle) -> dict:
         "research_status": "historical_checks_passed" if bundle.meta.research_eligible else "研究演示：历史验证未通过",
         "table_rows": {k: len(bundle.tables.get(k, [])) for k in TABLES},
         "issues": bundle.meta.quality_issues,
+        "coverage": coverage, "publication_status": bundle.meta.publication_status,
         "missing_research_checks": [k for k in RESEARCH_CHECKS if not bundle.meta.research_checks.get(k, False)],
     }
 

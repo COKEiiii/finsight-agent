@@ -31,11 +31,17 @@ def parser() -> argparse.ArgumentParser:
     sync.add_argument("--symbols", help="comma-separated mainland stock codes; default: 20-stock sample")
     sync.add_argument("--universe", choices=["sample", "mainboard"], default="sample")
     sync.add_argument("--request-timeout", type=float, default=30)
-    sync.add_argument("--retries", type=int, choices=[0, 1, 2], default=1)
+    sync.add_argument("--retries", type=int, choices=[0, 1, 2], default=2)
+    sync.add_argument("--resume", metavar="JOB_ID")
+    sync.add_argument("--background", action="store_true")
+    sync.add_argument("--limit", type=int, help="mainboard validation batch, e.g. 100 or 500")
+    sync.add_argument("--workers", type=int, choices=[1, 2, 3, 4], default=4)
+    sync.add_argument("--requests-per-second", type=float, default=1)
     screen = commands.add_parser("screen", help="deterministic ranking and portfolio reference plan")
     screen.add_argument("--snapshot")
     screen.add_argument("--as-of", type=date.fromisoformat)
     screen.add_argument("--capital", type=float, default=100_000)
+    screen.add_argument("--preview", action="store_true", help="explicitly allow an unpublished research preview")
     research = commands.add_parser("research", help="generate research cards; default: local Ollama")
     research.add_argument("--run", required=True)
     research.add_argument("--provider", choices=["ollama", "deepseek", "demo"], default=os.getenv("FINSIGHT_PROVIDER", "ollama"))
@@ -68,6 +74,12 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("dashboard", help="launch the local Streamlit interface")
     schedule = commands.add_parser("schedule", help="macOS daily data collector; no model calls")
     schedule.add_argument("action", choices=["install", "status"])
+    schedule.add_argument("--universe", choices=["sample", "mainboard"], default="sample")
+    job = commands.add_parser("jobs", help="durable collector progress and recovery")
+    sub = job.add_subparsers(dest="job_action", required=True)
+    sub.add_parser("list")
+    for action in ("show", "resume", "cancel"):
+        sub.add_parser(action).add_argument("job_id")
     return p
 
 
@@ -84,7 +96,12 @@ def check_daily(service: FinSight, universe: str, now: datetime | None = None) -
         raise ValueError("no completed sessions in exchange calendar")
     day = date.fromisoformat(sessions.iloc[-1]["trade_date"])
     scope = "current mainboard" if universe == "mainboard" else "sample:20 current mainboard stocks"
-    saved = [s for s in service.store.snapshots() if s.source == "akshare" and s.universe_scope == scope]
+    from finsight.data.akshare_provider import normalize_symbol
+    from finsight.data.demo import SAMPLE_CODES
+    from finsight.data.universe import universe_id
+    uid = universe_id(universe == "mainboard", None if universe == "mainboard" else [normalize_symbol(s) for s in SAMPLE_CODES])
+    saved = [s for s in service.store.snapshots() if s.source == "akshare" and
+             (s.universe_id == uid or not s.universe_id and s.universe_scope == scope)]
     if any(s.as_of == day and s.publishable for s in saved):
         return {"status": "up_to_date", "as_of": str(day)}
     failed = next((s for s in saved if s.as_of == day), None)
@@ -101,14 +118,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "sync":
             if args.request_timeout <= 0:
                 raise ValueError("request-timeout must be positive")
+            if not 0 < args.requests_per_second <= 1 or args.limit is not None and args.limit <= 0:
+                raise ValueError("rate must be >0 and <=1; validation limit must be positive")
             result = service.sync(args.provider, args.as_of, args.start,
                                   args.symbols.split(",") if args.symbols else None,
-                                  args.universe == "mainboard", args.request_timeout, args.retries)
+                                  args.universe == "mainboard", args.request_timeout, args.retries,
+                                  resume=args.resume, background=args.background, limit=args.limit,
+                                  workers=args.workers, interval=1 / args.requests_per_second)
             output(result)
+            if args.background or result.get("status") == "already_running":
+                return 0
             return 0 if result["publishable"] else 2
         if args.command == "screen":
-            result = service.screen(args.snapshot, args.as_of, args.capital)
+            result = service.screen(args.snapshot, args.as_of, args.capital, args.preview)
             output({"run_id": result.run_id, "eligible_count": result.eligible_count,
+                    "publication_status": result.publication_status, "coverage": result.coverage,
                     "candidates": result.candidates, "exports": str(service.store.artifact_dir(result.run_id))})
         elif args.command == "research":
             cards = service.research(args.run, args.provider, args.model, args.limit)
@@ -159,7 +183,19 @@ def main(argv: list[str] | None = None) -> int:
                                     "--server.address", "127.0.0.1", "--", "--data-dir", str(service.store.root)])
         elif args.command == "schedule":
             from finsight.scheduler import install, status
-            output(install(service.store.root) if args.action == "install" else status())
+            output(install(service.store.root, universe=args.universe) if args.action == "install" else status())
+        elif args.command == "jobs":
+            from finsight.jobs import Jobs
+            jobs = Jobs(service.store)
+            if args.job_action == "list":
+                output(jobs.list())
+            elif args.job_action == "show":
+                output(jobs.get(args.job_id))
+            elif args.job_action == "cancel":
+                output(jobs.cancel(args.job_id))
+            else:
+                jobs.resume(args.job_id)
+                output(jobs.launch(args.job_id))
         return 0
     except (ValueError, OSError, KeyError) as exc:
         print(f"FinSight: {exc}", file=sys.stderr)

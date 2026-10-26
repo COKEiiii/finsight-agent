@@ -7,7 +7,6 @@ from pathlib import Path
 import pandas as pd
 
 from finsight.backtest import run_backtest
-from finsight.data.akshare_provider import AKShareProvider
 from finsight.data.demo import make_demo
 from finsight.data.quality import audit, missing_sessions
 from finsight.data.store import Store, code_version
@@ -24,40 +23,133 @@ class FinSight:
 
     def sync(self, provider: str = "demo", as_of: date | None = None, start: date | None = None,
              symbols: list[str] | None = None, mainboard: bool = False,
-             timeout: float = 30, retries: int = 1) -> dict:
-        if provider == "demo":
+             timeout: float = 30, retries: int = 2, *, resume: str | None = None,
+             background: bool = False, limit: int | None = None, workers: int = 4,
+             interval: float = 1, api=None, clock=None) -> dict:
+        if provider == "demo" and resume is None:
+            from finsight.data.universe import current_members, membership_id
             bundle = make_demo(as_of or date(2025, 12, 31), start or date(2022, 1, 3))
-        elif provider == "akshare":
-            bundle = AKShareProvider(self.store.root, timeout, retries).fetch(as_of, start, symbols, mainboard)
-            # Preserve first-observed financial values and historical stock states across daily snapshots.
-            previous = next((s for s in self.store.snapshots() if s.source == "akshare" and
-                             s.universe_scope == bundle.meta.universe_scope and s.as_of <= bundle.meta.as_of), None)
-            if previous:
-                old = self.store.load_snapshot(previous.snapshot_id)
-                states = pd.concat([old["universe"], bundle["universe"]], ignore_index=True)
-                bundle.tables["universe"] = states.drop_duplicates(["symbol", "known_on"], keep="last")
-                parts = [frame for frame in (old["financials"], bundle["financials"]) if not frame.empty]
-                fin = pd.concat(parts, ignore_index=True) if parts else bundle["financials"].copy()
-                identity = ["symbol", "report_period", "announcement_date", "roe", "revenue_growth"]
-                bundle.tables["financials"] = fin.sort_values("available_on").drop_duplicates(identity, keep="first")
-        else:
+            members = current_members(bundle["universe"])
+            bundle.meta.schema_version = 2
+            bundle.meta.universe_id = "demo-" + membership_id(members)
+            bundle.meta.membership_id, bundle.meta.membership_symbols = membership_id(members), members
+            return self._save_bundle(bundle)
+        from finsight.data.akshare_provider import normalize_symbol
+        from finsight.data.demo import SAMPLE_CODES
+        from finsight.data.universe import universe_id
+        from finsight.jobs import Jobs
+        if provider != "akshare" and resume is None:
             raise ValueError("unknown data provider")
-        quality = audit(bundle)
-        saved = {str(s.as_of) for s in self.store.snapshots()
-                 if s.source == bundle.meta.source and s.universe_scope == bundle.meta.universe_scope}
+        if timeout <= 0 or not 1 <= workers <= 4 or retries not in {0, 1, 2} or interval < 0:
+            raise ValueError("invalid collector timeout/concurrency/retry/rate settings")
+        jobs = Jobs(self.store)
+        if resume:
+            job = jobs.resume(resume)
+        else:
+            members = [normalize_symbol(s) for s in symbols] if symbols else (None if mainboard else [normalize_symbol(s) for s in SAMPLE_CODES])
+            uid = universe_id(mainboard, members, limit)
+            previous = self.store.latest(uid)
+            config = {"as_of": str(as_of) if as_of else None, "start": str(start) if start else None,
+                "symbols": symbols, "mainboard": mainboard, "limit": limit,
+                "timeout": timeout, "retries": retries, "workers": workers, "interval": interval,
+                "universe_id": uid, "base_snapshot_id": previous.snapshot_id if previous else None,
+                "strategy": self.config.model_dump()}
+            self.store.register_strategy(self.config)
+            job = jobs.create(config)
+        if background:
+            return jobs.launch(job["job_id"])
+        if job["status"] == "running" and jobs.alive(job["pid"]):
+            return {"job_id": job["job_id"], "publishable": False, "status": "already_running"}
+        return self.run_job(job["job_id"], api=api, clock=clock)
+
+    def _save_bundle(self, bundle) -> dict:
+        quality = audit(bundle, self.config)
+        saved = {str(s.as_of) for s in self.store.snapshots() if s.universe_id == bundle.meta.universe_id}
         quality["missing_snapshot_dates"] = missing_sessions(bundle, saved | {str(bundle.meta.as_of)})
         if quality["missing_snapshot_dates"]:
-            quality["catchup_note"] = "行情历史已补采；缺失日未保存的估值/财务/股票状态版本不可重建，不伪造当日快照。"
+            quality["catchup_note"] = "已补采行情；缺失日期的历史股票状态和财报版本不能事后伪造。"
         self.store.save_snapshot(bundle)
         folder = self.store.root / "snapshots" / bundle.meta.snapshot_id
         (folder / "quality.json").write_text(json.dumps(quality, ensure_ascii=False, indent=2), encoding="utf-8")
         return quality
 
+    def run_job(self, job_id: str, *, api=None, clock=None) -> dict:
+        import fcntl
+        import os
+        import signal
+        import threading
+        import time
+
+        from finsight.data.collector import Collector
+        from finsight.data.requests import RequestBroker
+        from finsight.jobs import JobCancelled, Jobs
+        jobs = Jobs(self.store)
+        row = jobs.get(job_id)
+        config = row["config"]
+        self.config = StrategyConfig.model_validate(config["strategy"])
+        started = time.perf_counter()
+        broker = None
+        previous_handler = None
+        with (self.store.root / ".collector.lock").open("a+") as lock:
+            # Different profiles can queue; only one coordinator consumes the root's request budget.
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                jobs.check_cancelled(job_id)
+                jobs.update(job_id, status="running", pid=os.getpid(), progress={"phase": "starting"})
+                broker = RequestBroker(self.store, job_id, config["workers"], config["interval"],
+                                       config["timeout"], config["retries"], api=api, clock=clock)
+                if threading.current_thread() is threading.main_thread():
+                    previous_handler = signal.getsignal(signal.SIGTERM)
+                    signal.signal(signal.SIGTERM, lambda *_: broker.cancel_event.set())
+                base = self.store.load_snapshot(config["base_snapshot_id"]) if config.get("base_snapshot_id") else None
+                bundle = Collector(broker, config, base).fetch()
+                jobs.update(job_id, progress={"phase": "quality_and_snapshot"})
+                quality = self._save_bundle(bundle)
+                result = self.screen(bundle.meta.snapshot_id, preview=not quality["publishable"])
+                quality.update(job_id=job_id, screen_run_id=result.run_id)
+                jobs.update(job_id, status="completed" if quality["publishable"] else "partial", pid=None,
+                    snapshot_id=bundle.meta.snapshot_id, progress={"phase": "done", "coverage": bundle.meta.coverage,
+                    "screen_run_id": result.run_id, "elapsed_seconds": time.perf_counter() - started,
+                    "publication_status": result.publication_status})
+                if bundle.meta.universe_complete and not bundle.meta.synthetic:
+                    if quality["publishable"]:
+                        with self.store.connect() as db:
+                            db.execute("INSERT OR REPLACE INTO publications VALUES (?,?,?,?,?)", (bundle.meta.universe_id,
+                                str(bundle.meta.as_of), bundle.meta.snapshot_id, result.run_id, quality["coverage"]["coverage"]))
+                    if api is None:
+                        from finsight.scheduler import update_collection_rollout
+                        update_collection_rollout(self.store, bundle.meta.universe_id)
+                return quality
+            except JobCancelled as exc:
+                jobs.update(job_id, status="cancelled", error=str(exc), pid=None, progress={"phase": "cancelled"})
+                raise ValueError(str(exc)) from exc
+            except Exception as exc:
+                jobs.update(job_id, status="failed", error=f"{type(exc).__name__}: {str(exc)[:500]}", pid=None,
+                            progress={"phase": "failed", "elapsed_seconds": time.perf_counter() - started})
+                raise
+            finally:
+                if previous_handler is not None:
+                    signal.signal(signal.SIGTERM, previous_handler)
+                if broker:
+                    broker.close()
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
     def screen(self, snapshot_id: str | None = None, as_of: date | None = None,
-               capital: float = 100_000) -> ScreeningResult:
-        bundle = self.store.load_snapshot(snapshot_id)
-        audit(bundle)
-        result = screen(bundle, self.config, as_of)
+               capital: float = 100_000, preview: bool = False) -> ScreeningResult:
+        if snapshot_id is None:
+            latest = self.store.latest(published_only=not preview)
+            if latest is None:
+                raise ValueError("no published snapshots; select a preview snapshot explicitly")
+            snapshot_id = latest.snapshot_id
+        full = self.store.load_snapshot(snapshot_id, table_names=("calendar",))
+        if as_of and as_of > full.meta.as_of:
+            raise ValueError("selection date exceeds snapshot cutoff")
+        day = as_of or full.meta.as_of
+        sessions = sorted(full["calendar"]["trade_date"].loc[full["calendar"]["trade_date"] <= str(day)])
+        lower = sessions[max(0, len(sessions) - 61)] if sessions else str(day)
+        bundle = self.store.load_snapshot(snapshot_id, date_range=(lower, str(day)))
+        audit(bundle, self.config)
+        result = screen(bundle, self.config, as_of, preview=preview, store=self.store)
         payload = result.model_dump(mode="json")
         self.store.save_run("screen", result.snapshot_id, self.config, payload, result.run_id)
         folder = self.store.artifact_dir(result.run_id)
