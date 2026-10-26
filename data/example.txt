@@ -1,0 +1,3 @@
+Hello, Agent!
+This is my first File Reader tool.
+The answer is 42.
