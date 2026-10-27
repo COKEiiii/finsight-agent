@@ -49,9 +49,12 @@ def parser() -> argparse.ArgumentParser:
     research.add_argument("--model")
     research.add_argument("--limit", type=int, default=10)
     evaluation = commands.add_parser("evaluate", help="prepare 30 research cases or compare local Ollama models")
-    evaluation.add_argument("--run", required=True, help="screening run containing ten real candidates")
+    evaluation_source = evaluation.add_mutually_exclusive_group(required=True)
+    evaluation_source.add_argument("--run", help="screening run containing ten real candidates")
+    evaluation_source.add_argument("--resume", metavar="SUITE_ID", help="resume saved local evaluation checkpoints")
+    evaluation_source.add_argument("--status", metavar="SUITE_ID", help="read saved progress without calling a model")
     evaluation.add_argument("--models", help="comma-separated local models; omit to prepare cases only")
-    evaluation.add_argument("--limit", type=int, default=30, help="number of cases to run per model; full gate requires 30")
+    evaluation.add_argument("--limit", type=int, help="number of cases per model when creating a suite; default 30")
     backtest = commands.add_parser("backtest", help="daily ledger and comparable momentum baseline")
     backtest.add_argument("--snapshot")
     backtest.add_argument("--start", type=date.fromisoformat, default=date(2023, 1, 1))
@@ -166,8 +169,18 @@ def main(argv: list[str] | None = None) -> int:
             return 2 if any(c.status == "failed" for c in cards) else 0
         elif args.command == "evaluate":
             from finsight.evaluation import evaluate_run
-            output(evaluate_run(service.store, args.run, models=tuple(args.models.split(",")) if args.models else (),
-                                limit=args.limit))
+            from finsight.evaluation_jobs import run_suite, suite_status
+            if args.status:
+                if args.models or args.limit is not None:
+                    raise ValueError("status cannot change evaluation models or limit")
+                output(suite_status(service.store, args.status))
+            elif args.resume:
+                if args.limit is not None:
+                    raise ValueError("resume retains the suite's fixed case limit")
+                output(run_suite(service.store, args.resume, models=tuple(args.models.split(",")) if args.models else ()))
+            else:
+                output(evaluate_run(service.store, args.run, models=tuple(args.models.split(",")) if args.models else (),
+                                    limit=args.limit if args.limit is not None else 30))
         elif args.command == "backtest":
             result = service.backtest(args.snapshot, args.start, args.end, args.capital)
             output({k: result[k] for k in ("run_id", "status", "start", "end", "synthetic") } |

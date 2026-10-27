@@ -162,6 +162,19 @@ def test_thirty_case_suite_requires_real_candidates_and_tracks_synthetic_changes
     assert report["case_count"] == 30 and report["models"] == {}
 
 
+def test_evaluation_cache_scope_does_not_reuse_or_replace_product_cards(tmp_path):
+    service, result, candidate, facts = ready(tmp_path)
+    value = demo_content(candidate, facts).model_dump()
+    adapter = Answers([value, value, value])
+    product = research_candidate(result, candidate, service.store, adapter)
+    scoped = research_candidate(result, candidate, service.store, adapter, cache_scope="evaluation:suite-a")
+    assert not product.cache_hit and not scoped.cache_hit
+    assert research_candidate(result, candidate, service.store, adapter).cache_hit
+    assert research_candidate(result, candidate, service.store, adapter, cache_scope="evaluation:suite-a").cache_hit
+    other = research_candidate(result, candidate, service.store, adapter, cache_scope="evaluation:suite-b")
+    assert not other.cache_hit and other.status == "completed"
+
+
 def test_program_fills_only_the_matching_cited_field_and_unit(tmp_path):
     _, _, candidate, facts = ready(tmp_path)
     payload = demo_content(candidate, facts).model_dump()

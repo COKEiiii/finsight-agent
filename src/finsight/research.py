@@ -283,7 +283,8 @@ def demo_content(candidate: dict, evidence: dict | None = None) -> ResearchConte
 
 def research_candidate(result: ScreeningResult, candidate: dict, store: Store,
                        adapter: ChatAdapter | Any | None = None, demo: bool = False,
-                       max_llm_calls: int = 3, max_tool_calls: int = 6) -> ResearchCard:
+                       max_llm_calls: int = 3, max_tool_calls: int = 6,
+                       cache_scope: str | None = None) -> ResearchCard:
     started = time.perf_counter()
     evidence = evidence_for(result, candidate)
     typed = result.schema_version >= 2
@@ -292,12 +293,15 @@ def research_candidate(result: ScreeningResult, candidate: dict, store: Store,
     prompt_version = FIELD_PROMPT_VERSION if typed else PROMPT_VERSION
     schema = content_schema(list(evidence), typed)
     model = "offline-template" if demo else adapter.model
-    key = fingerprint({"candidate": candidate, "evidence": evidence, "model": model,
+    cache_input = {"candidate": candidate, "evidence": evidence, "model": model,
                        "provider": "demo" if demo else adapter.provider,
                        "endpoint": "demo" if demo else adapter.base_url,
                        "structured_transport": "demo" if demo else getattr(adapter, "structured_transport", "chat"),
                        "prompt": prompt, "schema": schema,
-                       "prompt_version": prompt_version})
+                       "prompt_version": prompt_version}
+    if cache_scope is not None:
+        cache_input["scope"] = cache_scope
+    key = fingerprint(cache_input)
     cached = store.cached(key)
     if cached:
         try:
