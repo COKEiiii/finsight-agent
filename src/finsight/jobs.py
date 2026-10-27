@@ -33,8 +33,8 @@ class Jobs:
         existing_id = None
         with self.store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            existing = db.execute("SELECT * FROM jobs WHERE identity=? AND status IN "
-                "('queued','running','cancelling','failed','cancelled','partial') "
+            existing = db.execute("SELECT * FROM jobs WHERE identity=? AND (status IN "
+                "('queued','running','cancelling','failed','cancelled') OR (status='partial' AND snapshot_id IS NULL)) "
                 "ORDER BY created_at DESC LIMIT 1", (identity,)).fetchone()
             if existing:
                 existing_id = existing["job_id"]
@@ -89,8 +89,13 @@ class Jobs:
             values = {"updated_at": now_iso(), **fields}
             if status:
                 values["status"] = status
-            if progress:
-                values["progress"] = json.dumps({**json.loads(row[0]), **progress}, ensure_ascii=False)
+            if progress or status in {"completed", "partial", "failed", "cancelled", "queued", "running"}:
+                merged = {**json.loads(row[0]), **(progress or {})}
+                if status in {"completed", "partial", "failed", "cancelled"}:
+                    merged["finished_at"] = now_iso()
+                elif status in {"queued", "running"}:
+                    merged.pop("finished_at", None)
+                values["progress"] = json.dumps(merged, ensure_ascii=False)
             if "config" in values:
                 values["config"] = json.dumps(values["config"], ensure_ascii=False)
             db.execute("UPDATE jobs SET " + ",".join(f"{key}=?" for key in values) + " WHERE job_id=?",
@@ -108,6 +113,10 @@ class Jobs:
             return row
         if row["status"] == "completed":
             return row
+        from finsight.collection_status import recovery_status
+        recovery = recovery_status(self.store, row)
+        if not recovery["can_resume"]:
+            raise ValueError(recovery.get("message", "该任务无需恢复，请创建新的增量采集。"))
         self.update(job_id, status="queued", error=None, pid=None)
         return self.get(job_id)
 

@@ -94,11 +94,13 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             columns = {row["name"] for row in db.execute("PRAGMA table_info(job_requests)")}
             for name, definition in {"loaded_at": "TEXT", "http_bytes": "INTEGER NOT NULL DEFAULT 0",
-                                     "error_detail": "TEXT", "network_requests": "INTEGER NOT NULL DEFAULT 0"}.items():
+                                     "error_detail": "TEXT", "network_requests": "INTEGER NOT NULL DEFAULT 0",
+                                     "response_rows": "INTEGER"}.items():
                 if name not in columns:
                     db.execute(f"ALTER TABLE job_requests ADD COLUMN {name} {definition}")
             db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (3)")
             db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (4)")
+            db.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (5)")
 
     @contextmanager
     def connect(self):

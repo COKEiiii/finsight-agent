@@ -70,6 +70,7 @@ DEEPSEEK_MODEL=deepseek-flash
 finsight sync --provider akshare --universe mainboard --limit 100 --background
 finsight jobs list
 finsight jobs show JOB_ID
+finsight jobs profile JOB_ID          # 导出采集验收 JSON、Markdown 与接口性能 CSV
 finsight jobs resume JOB_ID
 finsight sync --provider akshare --universe mainboard --limit 500 --background
 finsight sync --provider akshare --universe mainboard --background
@@ -77,7 +78,13 @@ finsight sync --provider akshare --universe mainboard --background
 
 `--limit` 批次使用独立的股票池定义与成员清单，不能算作全主板榜单。完成任务后会自动校验并选股。已确认的 ST、新股等规则排除单列；接口失败、未知交易状态、缺失财报计入应判定分母。可完整判定的比例达到 98% 才发布当期榜单；低于门槛的结果只能用 `finsight screen --snapshot SNAPSHOT_ID --preview` 查阅。界面展示全市场与行业覆盖率、缺口、请求次数、缓存命中和恢复入口。历史回测可信度仍单独验收。预览榜单不能生成正式模拟调仓记录。
 
+界面分别显示“股票处理完成”和“榜单可发布”。若今天首次取得的股票状态无法用于昨天的截止日期，旧任务会明确提示等待新交易日收盘后创建增量任务；不会通过恢复旧检查点来补造历史状态。已完成任务的耗时在结束时固定。源请求失败或中断的任务仍可恢复，已保存的历史底座会被新交易日的增量任务复用。
+
+每次采集结束会自动保存接口性能报告；也可用 `jobs profile` 导出当前报告。报告区分任务历时、最近一次尝试耗时、累计请求耗时、缓存读取、实际网络请求、HTTP 字节与返回行数。累计请求耗时存在并发重叠；HTTP 字节不包含未计量的 BaoStock TCP 字节。旧记录未采集的行数显示为空，不用零冒充。
+
 新快照引用不可变的 Parquet 分区；旧版快照和运行记录继续可读。日常更新拉取缺失区间并重取最近 10 个交易日。东方财富估值接口目前返回单股历史，程序只在本地截取和缓存，没有宣称服务端增量；行情备用路径 BaoStock 支持按区间取得原始价格、PE-TTM/PB 和复权收盘价。财务保持原有年报加权 ROE 口径，批量接口失败后改用单股财务接口；BaoStock 平均 ROE 不替代该字段，旧快照中的这种数据会被标记为口径不符。来源、公告日期、首次抓取时间与缓存读取时间分开保存；修订值不会被提前用于选股。财务每日复核，同一天已验证的记录可复用。
+
+当估值缓存缺少目标交易日时，程序会跳过缓存重新请求一次，防止晚上继续使用早上尚未包含当日收盘数据的历史估值。新响应追加保存，旧原始文件与首次抓取时间仍可追溯。
 
 4 个工作进程共享网络请求启动额度，接口内部的 HTTP 翻页也受每秒一次约束。BaoStock 请求单独串行调度；连续三次超时或连接失败会停止批次并保存断点。任务记录同时显示 API 尝试次数、可观测的实际网络请求数、Parquet 返回大小及 HTTP 响应体大小；强制超时被终止的请求无法取得完整计数，会单列。
 

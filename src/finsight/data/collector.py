@@ -82,9 +82,9 @@ class Collector(AKShareProvider):
                         identity = [column for column in ("symbol", "report_period", "announcement_date", "roe", "revenue_growth", "source", "roe_basis") if column in combined]
                         self.base_groups[key][symbol] = canonical(combined.sort_values("available_on", kind="stable").drop_duplicates(identity, keep="first"))
 
-    def call(self, method: str, **kwargs) -> pd.DataFrame:
+    def call(self, method: str, *, force_refresh: bool = False, **kwargs) -> pd.DataFrame:
         ttl = 86400 if self.sample_mode and method == "stock_individual_info_em" else None
-        frame = self.broker.call(method, cache_ttl=ttl, **kwargs)
+        frame = self.broker.call(method, cache_ttl=ttl, force_refresh=force_refresh, **kwargs)
         with self.observation_lock:
             self.observations[fingerprint({"method": method, "kwargs": kwargs})] = frame.attrs["fetched_at"]
         return frame
@@ -323,6 +323,11 @@ class Collector(AKShareProvider):
                 vals = backup_vals
             else:
                 vals = self.call("stock_value_em", symbol=code)
+                if (day not in set(date_column(vals["数据日期"])) and
+                        vals.attrs.get("loaded_at") != vals.attrs.get("fetched_at")):
+                    # This endpoint has no date parameter. A morning cache can
+                    # otherwise hide the completed session on an evening run.
+                    vals = self.call("stock_value_em", symbol=code, force_refresh=True)
                 fetched = vals.attrs["fetched_at"]
                 vals = vals.rename(columns={"数据日期": "trade_date", "PE(TTM)": "pe_ttm", "市净率": "pb"})
                 vals["trade_date"] = date_column(vals["trade_date"])

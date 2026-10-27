@@ -137,6 +137,13 @@ class FinSight:
                         except (OSError, ValueError) as exc:
                             quality["schedule_issue"] = str(exc)
                             jobs.update(job_id, progress={"schedule_issue": str(exc)})
+                try:
+                    report = self.collection_report(job_id, export=True)
+                    quality.update(collection_report_run_id=report["run_id"], collection_report_exports=report["exports"])
+                    jobs.update(job_id, progress={"collection_report_run_id": report["run_id"]})
+                except (OSError, ValueError) as exc:
+                    quality["report_issue"] = str(exc)
+                    jobs.update(job_id, progress={"report_issue": str(exc)})
                 return quality
             except JobCancelled as exc:
                 jobs.update(job_id, status="cancelled", error=str(exc), pid=None, progress={"phase": "cancelled"})
@@ -181,6 +188,21 @@ class FinSight:
         plan = portfolio_plan(result, self.config, capital, bundle["calendar"])
         (folder / "portfolio_plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
         return result
+
+    def collection_report(self, job_id: str, *, export: bool = False, now: datetime | None = None) -> dict:
+        from finsight.collection_status import build_report, render_report
+        from finsight.jobs import Jobs
+        job = Jobs(self.store).get(job_id)
+        report = build_report(self.store, job, now)
+        if export:
+            config = StrategyConfig.model_validate(job["config"].get("strategy", self.config.model_dump()))
+            run_id = self.store.save_run("collection_report", job["snapshot_id"] or "", config, report)
+            folder = self.store.artifact_dir(run_id)
+            report.update(run_id=run_id, exports=str(folder))
+            (folder / "collection_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            (folder / "collection_report.md").write_text(render_report(report), encoding="utf-8")
+            pd.DataFrame(report["methods"]).to_csv(folder / "requests.csv", index=False, encoding="utf-8-sig")
+        return report
 
     def research(self, run_id: str, provider: str = "ollama", model: str | None = None,
                  limit: int = 10, adapter=None) -> list[ResearchCard]:

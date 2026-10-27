@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
+from finsight.collection_status import elapsed_seconds, recovery_status
 from finsight.data.quality import audit
 from finsight.jobs import Jobs
 from finsight.models import ScreeningResult, StrategyConfig, TradeJournalEntry
@@ -61,6 +62,7 @@ def main():
                 return
             latest_published = service.store.latest(published_only=True)
             recent.sort(key=lambda item: (item["status"] in {"queued", "running", "cancelling"},
+                item["config"].get("mainboard", False) and not item["config"].get("limit") and not item["config"].get("symbols"),
                 latest_published is not None and item["snapshot_id"] == latest_published.snapshot_id,
                 item["config"].get("mainboard", False), item["created_at"]), reverse=True)
             by_job = {job["job_id"]: job for job in recent}
@@ -68,13 +70,16 @@ def main():
                 format_func=lambda identifier: f"{by_job[identifier]['status']} · {by_job[identifier]['config']['universe_id'][:12]} · {identifier[:8]}")
             job = by_job[job_id]
             progress, requests = job["progress"], job["requests"]
-            elapsed = (datetime.now().astimezone() - datetime.fromisoformat(job["created_at"])).total_seconds()
+            elapsed = elapsed_seconds(job)
+            recovery = recovery_status(service.store, job)
             done, total = progress.get("symbols_completed", 0), progress.get("symbols_total", 0)
             if total:
                 st.progress(min(done / total, 1.0), text=f"股票 {done}/{total} · {progress.get('phase', job['status'])}")
                 if progress.get("symbols_with_errors"):
-                    st.caption(f"存在字段或接口问题的股票：{progress['symbols_with_errors']} 只；完成后按覆盖率统一判定。")
-            st.caption(f"请求成功 {requests['completed']} · 失败 {requests['failed']} · 缓存命中 {requests['cache_hits']} · 总耗时 {elapsed / 60:.1f} 分钟 · 请求耗时 {requests['request_seconds']:.1f} 秒")
+                    st.caption(f"有采集提示或接口问题的股票：{progress['symbols_with_errors']} 只；按质量报告统一判定。")
+            st.caption(f"请求成功 {requests['completed']} · 失败 {requests['failed']} · 缓存命中 {requests['cache_hits']} · 任务历时 {elapsed / 60:.1f} 分钟 · 累计请求 {requests['request_seconds']:.1f} 秒")
+            if progress.get("phase") == "done":
+                st.caption("股票处理已完成，数据已保存在本地；正式发布另按日期与覆盖率判定。")
             coverage = progress.get("coverage", {})
             if coverage:
                 st.caption(f"覆盖率 {coverage.get('coverage', 0):.2%} · {progress.get('publication_status', '预览')}")
@@ -83,7 +88,20 @@ def main():
             interrupted = job["status"] in {"queued", "running", "cancelling"} and not jobs.alive(job["pid"])
             if interrupted:
                 st.warning("采集进程已停止，成功请求保留在本地，可恢复该任务。")
-            if (interrupted or job["status"] in {"failed", "cancelled", "partial"}) and st.button("恢复该任务", key=f"resume_{job_id}"):
+            if recovery.get("message"):
+                st.info(recovery["message"])
+            if recovery["action"] == "new_incremental":
+                earliest = recovery.get("earliest_capture_at")
+                ready = not earliest or datetime.now().astimezone() >= datetime.fromisoformat(earliest)
+                if earliest:
+                    st.caption(f"最早评估新的交易日：{recovery['next_session']} 18:00 后，再进行增量更新。")
+                if st.button("新建增量采集", key=f"incremental_{job_id}", disabled=not ready):
+                    config = job["config"]
+                    new_job = service.sync("akshare", symbols=config.get("symbols"),
+                        mainboard=config.get("mainboard", False), limit=config.get("limit"), background=True)
+                    st.session_state["job_choice"] = new_job["job_id"]
+                    st.rerun()
+            if recovery["can_resume"] and (interrupted or job["status"] in {"failed", "cancelled", "partial"}) and st.button("恢复该任务", key=f"resume_{job_id}"):
                 service.sync("akshare", resume=job_id, background=True)
                 st.rerun()
             if job["status"] in {"queued", "running"} and st.button("取消该任务", key=f"cancel_{job_id}"):
@@ -141,6 +159,27 @@ def main():
         service.config = StrategyConfig.model_validate_json(screen_runs[0]["config"])
     with data_tab:
         st.subheader("数据覆盖与可追溯性")
+        full_job = next((job for job in jobs.list() if job["config"].get("mainboard") and
+                         not job["config"].get("limit") and not job["config"].get("symbols")), None)
+        if full_job:
+            with st.expander("全主板初始化与采集性能", expanded=full_job["status"] == "partial"):
+                report = service.collection_report(full_job["job_id"])
+                if report["processing_complete"]:
+                    st.success(f"全主板股票处理已完成：{report['symbols_processed']}/{report['symbols_total']}，数据已保存。")
+                else:
+                    st.write(f"全主板股票处理：{report['symbols_processed']}/{report['symbols_total']}")
+                st.caption(f"此处为全主板任务 {report['job_id']}；下方覆盖率对应当前所选快照。")
+                if report["recovery"].get("message"):
+                    st.info(report["recovery"]["message"])
+                st.write("本地记录数：", report["local_tables"])
+                if report["rollout"]:
+                    st.caption(f"全主板连续达标交易日：{report['rollout']['consecutive_days']}/{report['rollout']['required_days']}；仅统计真实正式发布的交易日。")
+                st.caption(f"任务历时 {report['wall_elapsed_seconds'] / 60:.1f} 分钟；累计请求耗时可重叠，不等于任务历时。")
+                if report["methods"]:
+                    st.dataframe(pd.DataFrame(report["methods"]), hide_index=True, width="stretch")
+                st.caption("HTTP 字节不含未计量的 BaoStock TCP 字节；返回行数为空表示旧记录未计量。")
+                st.download_button("下载全主板采集验收报告", json.dumps(report, ensure_ascii=False, indent=2),
+                    file_name="collection_report.json", mime="application/json")
         st.write(bundle.meta.universe_scope)
         st.dataframe(pd.DataFrame([{"数据表": k, "记录数": v} for k, v in quality["table_rows"].items()]),
                      hide_index=True, width="stretch")

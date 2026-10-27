@@ -126,18 +126,18 @@ class RequestBroker:
 
     def _record(self, request_id, method, kwargs, status, *, path=None, fetched_at=None,
                 attempts=0, elapsed=0., size=0, hit=False, error_kind=None,
-                loaded_at=None, http_bytes=0, error_detail=None, network_requests=0):
+                loaded_at=None, http_bytes=0, error_detail=None, network_requests=0, response_rows=None):
         with self.lock, self.store.connect() as db:
-            db.execute("INSERT INTO job_requests(job_id,request_id,method,kwargs,status,path,fetched_at,attempts,elapsed,bytes,cache_hit,error_kind,error,loaded_at,http_bytes,error_detail,network_requests) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(job_id,request_id) DO UPDATE SET "
+            db.execute("INSERT INTO job_requests(job_id,request_id,method,kwargs,status,path,fetched_at,attempts,elapsed,bytes,cache_hit,error_kind,error,loaded_at,http_bytes,error_detail,network_requests,response_rows) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(job_id,request_id) DO UPDATE SET "
                 "status=excluded.status,path=excluded.path,fetched_at=excluded.fetched_at,attempts=job_requests.attempts+excluded.attempts,"
                 "elapsed=job_requests.elapsed+excluded.elapsed,bytes=excluded.bytes,cache_hit=excluded.cache_hit,error_kind=excluded.error_kind,error=excluded.error,"
                 "loaded_at=excluded.loaded_at,http_bytes=job_requests.http_bytes+excluded.http_bytes,error_detail=excluded.error_detail,"
-                "network_requests=job_requests.network_requests+excluded.network_requests",
+                "network_requests=job_requests.network_requests+excluded.network_requests,response_rows=excluded.response_rows",
                 (self.job_id, request_id, method, json.dumps(kwargs, sort_keys=True), status, path, fetched_at,
-                 attempts, elapsed, size, int(hit), error_kind, error_kind, loaded_at, http_bytes, error_detail, network_requests))
+                 attempts, elapsed, size, int(hit), error_kind, error_kind, loaded_at, http_bytes, error_detail, network_requests, response_rows))
 
-    def call(self, method: str, *, cache_ttl: float | None = None, **kwargs) -> pd.DataFrame:
+    def call(self, method: str, *, cache_ttl: float | None = None, force_refresh: bool = False, **kwargs) -> pd.DataFrame:
         if self.cancel_event.is_set():
             from finsight.jobs import JobCancelled
             raise JobCancelled("collection interrupted; resume its job ID")
@@ -149,19 +149,19 @@ class RequestBroker:
             checkpoint = db.execute("SELECT * FROM job_requests WHERE job_id=? AND request_id=? AND status='done'", (self.job_id, key)).fetchone()
             cached = db.execute("SELECT * FROM request_cache WHERE cache_key=?", (key,)).fetchone()
         # A resumed fixed-date job keeps successful original observations, even across midnight.
-        frame = self._read(checkpoint, loaded)
+        frame = self._read(checkpoint, loaded) if not force_refresh else None
         if frame is not None:
             self._record(key, method, kwargs, "done", path=checkpoint["path"], fetched_at=checkpoint["fetched_at"],
-                         size=checkpoint["bytes"], hit=True, loaded_at=loaded)
+                         size=checkpoint["bytes"], hit=True, loaded_at=loaded, response_rows=len(frame))
             return frame
         ttl = self._ttl(method) if cache_ttl is None else cache_ttl
-        fresh = cached and (now - datetime.fromisoformat(cached["fetched_at"])).total_seconds() < ttl
+        fresh = not force_refresh and cached and (now - datetime.fromisoformat(cached["fetched_at"])).total_seconds() < ttl
         if fresh and (method not in {"stock_individual_info_em", "baostock_industry"} or ttl <= 86400):
             fresh = cached["fetched_at"][:10] == loaded[:10]
         frame = self._read(cached, loaded) if fresh else None
         if frame is not None:
             self._record(key, method, kwargs, "done", path=cached["path"], fetched_at=cached["fetched_at"],
-                         size=cached["bytes"], hit=True, loaded_at=loaded)
+                         size=cached["bytes"], hit=True, loaded_at=loaded, response_rows=len(frame))
             return frame
         if method.startswith("baostock_") and self.alternate_unavailable:
             raise SourceUnavailable("BaoStock repeatedly unavailable; resume this job after the source recovers")
@@ -219,7 +219,7 @@ class RequestBroker:
                     db.execute("INSERT OR REPLACE INTO request_cache VALUES (?,?,?,?,?)", (key, relative, fetched, digest, len(data)))
                 self._record(key, method, kwargs, "done", path=relative, fetched_at=fetched, attempts=1,
                              elapsed=time.perf_counter() - started, size=len(data), loaded_at=fetched,
-                             http_bytes=http_bytes, network_requests=network_requests)
+                             http_bytes=http_bytes, network_requests=network_requests, response_rows=len(frame))
                 frame.attrs["loaded_at"] = fetched
                 with self.condition:
                     self.failure_streak = 0

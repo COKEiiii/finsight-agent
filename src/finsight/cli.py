@@ -83,7 +83,7 @@ def parser() -> argparse.ArgumentParser:
     job = commands.add_parser("jobs", help="durable collector progress and recovery")
     sub = job.add_subparsers(dest="job_action", required=True)
     sub.add_parser("list")
-    for action in ("show", "resume", "cancel"):
+    for action in ("show", "resume", "cancel", "profile"):
         sub.add_parser(action).add_argument("job_id")
     return p
 
@@ -213,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
                 output(jobs.list())
             elif args.job_action == "show":
                 output(jobs.get(args.job_id))
+            elif args.job_action == "profile":
+                output(service.collection_report(args.job_id, export=True))
             elif args.job_action == "cancel":
                 output(jobs.cancel(args.job_id))
             else:
