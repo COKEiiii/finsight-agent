@@ -139,5 +139,26 @@ def test_default_financial_model_is_independent_of_learning_settings(monkeypatch
     monkeypatch.delenv("FINSIGHT_MODEL", raising=False)
     monkeypatch.setenv("LLM_MODEL", "unavailable-learning-model")
     adapter = ChatAdapter()
-    assert adapter.provider == "ollama" and adapter.model == "qwen3.5:4b"
+    assert adapter.provider == "ollama" and adapter.model == "qwen3:8b"
     adapter.close()
+
+
+def test_qwen35_structured_completion_uses_generate_without_enabling_thinking():
+    seen = []
+
+    def handler(request):
+        seen.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json={"response": '{"summary":"test"}', "prompt_eval_count": 12,
+                                       "eval_count": 5, "done_reason": "stop"})
+
+    adapter = ChatAdapter("ollama", "qwen3.5:4b", httpx.Client(transport=httpx.MockTransport(handler)))
+    schema = {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
+    adapter.final_schema = schema
+    answer = adapter.complete([{"role": "system", "content": "snapshot only"},
+                               {"role": "user", "content": "read current evidence"}], [], final=True)
+    path, body = seen[0]
+    assert path == "/api/generate" and body["format"] == schema and body["think"] is False
+    assert body["options"]["num_predict"] == 1500 and body["stream"] is False
+    assert body["system"] == "snapshot only" and "read current evidence" in body["prompt"]
+    assert answer["message"]["content"] == '{"summary":"test"}' and answer["output_tokens"] == 5
+    assert answer["message"]["tool_calls"] == []

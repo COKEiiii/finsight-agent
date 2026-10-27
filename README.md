@@ -27,14 +27,16 @@ finsight dashboard
 
 ```bash
 ollama serve                         # 已运行时跳过
-ollama pull qwen3.5:4b               # 已下载时跳过
+ollama pull qwen3:8b                 # 已下载时跳过
 finsight screen                     # 复制输出中的 run_id
-finsight research --run RUN_ID --provider ollama --model qwen3.5:4b --limit 1
+finsight research --run RUN_ID --provider ollama --model qwen3:8b --limit 1
 ```
 
 Dashboard 的“研究卡”页面也可选择本地模型。默认先生成一只股票，按需扩大到 Top 10。模型仅能读取当前候选股的快照证据；不会调整量化排名。每只最多 3 次模型请求、6 次工具执行、每次输出上限 1500 tokens；失败与格式修正计入预算。研究卡会核验引用与数字，明显不受证据支持的数字会被拒绝。页面刷新不触发调用，相同输入、提示词、模型和端点复用缓存。离线模板会明确标为 `demo`。
 
-字段级研究卡由程序列出数值、单位、日期与来源，模型只提供解释和风险。可先从真实选股记录准备固定的 30 个评估案例（10 个原始候选、20 个标明为人工变造的缺失、陈旧、负增长和单位案例），再在本地比较两个模型：
+默认使用本地 `qwen3:8b`，可通过模型输入框或 `FINSIGHT_MODEL` 更换。`qwen3.5:4b` 在本机严格事实校验中仍有反复失败的情况。常规解释未通过时，最后一次请求使用**模板辅助修正**：模型从已核验的事实措辞及证据配对中选择要点，程序填写数值与单位，并依据实际字段生成信息缺口。卡片会明确标注该模式；模型接口失败仍返回失败状态。首次生成可能需要数分钟，已通过的同版本结果会复用缓存。
+
+字段级研究卡由程序列出数值、单位、日期与来源，模型只提供解释和风险。模型输入使用字段占位符、正负信号与指标定义，避免小模型抄错数值；精确原值完整保存在研究卡的证据表与 JSON 中。报告期作为时间背景不会被误判为独立的日期断言，但明确日期、指标引用和单位仍须匹配；已缓存的解释也会重新通过当前事实校验。可先从真实选股记录准备固定的 30 个评估案例（10 个原始候选、20 个标明为人工变造的缺失、陈旧、负增长和单位案例），再在本地比较两个模型：
 
 ```bash
 finsight evaluate --run SCREEN_RUN_ID
@@ -50,7 +52,7 @@ finsight evaluate --run SCREEN_RUN_ID --models qwen3.5:4b,qwen3:8b
 ```dotenv
 FINSIGHT_DATA_DIR=data/finsight
 FINSIGHT_PROVIDER=ollama
-FINSIGHT_MODEL=qwen3.5:4b
+FINSIGHT_MODEL=qwen3:8b
 OLLAMA_HOST=http://localhost:11434
 # 以后切换：FINSIGHT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=

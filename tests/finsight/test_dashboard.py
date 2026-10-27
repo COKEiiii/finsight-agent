@@ -31,6 +31,26 @@ def test_empty_workspace_does_not_crash(tmp_path, monkeypatch):
     assert any("先创建" in info.value for info in app.info)
 
 
+def test_failed_research_explains_error_and_retains_diagnostics(tmp_path, monkeypatch):
+    import httpx
+
+    from finsight.research import ChatAdapter
+
+    monkeypatch.setenv("FINSIGHT_DATA_DIR", str(tmp_path))
+    service = FinSight(tmp_path)
+    meta = service.sync("demo", date(2025, 2, 28), date(2024, 1, 2))
+    result = service.screen(meta["snapshot_id"])
+    def offline(*args, **kwargs):
+        raise httpx.ConnectError("fixture offline")
+    monkeypatch.setattr(ChatAdapter, "complete", offline)
+    service.research(result.run_id, limit=1)
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    assert not app.exception
+    assert any("本地模型连接失败" in item.value for item in app.markdown)
+    assert any(item.label == "诊断详情" for item in app.expander)
+    assert any("request timed out" in item.value for item in app.code)
+
+
 def test_create_demo_switches_to_new_snapshot_even_when_older_date(tmp_path, monkeypatch):
     monkeypatch.setenv("FINSIGHT_DATA_DIR", str(tmp_path))
     FinSight(tmp_path).sync("demo", date(2026, 2, 27), date(2025, 1, 2))

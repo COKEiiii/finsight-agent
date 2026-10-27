@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 
 from finsight.models import ResearchContent, ScreeningResult
 
@@ -14,7 +15,7 @@ FIELD_GROUPS = {
 UNITS = {"rank": "名", "score": "分", "roe": "%", "revenue_growth": "%",
          "momentum_60": "小数收益率", "ma_ratio": "小数比值", "amount_20": "元/日",
          "close": "元/股", "pe_ttm": "倍", "pb": "倍"}
-TERMS = {"roe": ("ROE", "净资产收益率"), "revenue_growth": ("营收", "收入同比"),
+TERMS = {"roe": ("ROE", "净资产收益率"), "revenue_growth": ("营收", "营业收入", "收入同比", "收入增长"),
          "momentum_60": ("动量", "60 日收益率", "60日收益率"),
          "ma_ratio": ("均线", "MA20", "MA60"),
          "pe_ttm": ("PE", "市盈率"), "pb": ("PB", "市净率"),
@@ -23,16 +24,25 @@ TERMS = {"roe": ("ROE", "净资产收益率"), "revenue_growth": ("营收", "收
          "report_period": ("报告期", "报表期", "财报期", "财报", "年报"),
          "announcement_date": ("公告日", "披露日", "公告时间", "披露时间"),
          "available_on": ("首次可见", "可用日"), "trade_date": ("交易日", "行情日", "行情日期"), "industry": ("行业",)}
-CLAIM_INDICATORS = {field: terms for field, terms in TERMS.items() if field != "industry"} | {
+CLAIM_INDICATORS = {field: terms for field, terms in TERMS.items() if field not in {
+    "industry", "report_period", "announcement_date", "available_on", "trade_date"}} | {
     "close": ("收盘价",), "score": ("综合得分", "总分", "综合评分", "选择分数", "策略得分"),
-    "report_period": ("报告期", "报表期", "财报期")}
+}
 NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?")
 CHINESE_QUANTITY = re.compile(r"百分之[零〇一二两三四五六七八九十百千万亿点负]+|[零〇一二两三四五六七八九十百千万亿]+(?:元|倍|万元|亿元|个百分点|名|只|家)")
 INDICATOR_LABEL = re.compile(r"60\s*日(?:收益率|动量)|(?:20|60)\s*日均线|20\s*日(?:平均)?成交额|MA(?:20|60)", re.I)
-COMPARISON = re.compile(r"估值(?:合理|偏低|偏高|较低|较高|便宜|昂贵)|低估|高估|(?:低于|高于|优于|超过|落后于).{0,8}(?:行业|同行)|同行相比")
+COMPARISON = re.compile(r"(?:估值|市盈率|市净率|\bPE\b|\bPB\b).{0,20}(?:合理|偏低|偏高|较低|较高|便宜|昂贵|高位|低位)|低估|高估|(?:低于|高于|优于|超过|落后于).{0,8}(?:行业|同行)|同行相比", re.I)
+BENCHMARK_COMPARISON = re.compile(r"(?:优于|跑赢|超过|落后于|弱于|跑输).{0,8}(?:市场|大盘|基准|指数)")
 FACT_TOKEN = re.compile(r"\{\{([a-zA-Z_][a-zA-Z_0-9.]*)\}\}")
 TOKEN_WITH_UNIT = re.compile(FACT_TOKEN.pattern + r"\s*(元/股|元/日|元每股|元每天|个百分点|%|％|倍|元|分|名|年|点)")
 EMPTY_QUANTITY = re.compile(r"第\s*(?:名|位)|(?:为|达|达到)\s*(?:分|点|倍|元|%|年|名)|年\s*年(?:末|初)")
+NEGATIVE_GROWTH = re.compile(r"负增长|营收(?:同比)?(?:下滑|下降|萎缩)|(?:营业)?收入(?:同比)?(?:下滑|下降|收缩)")
+POSITIVE_GROWTH = re.compile(r"正增长|增长强劲|稳健增长|持续增长|增长良好|增长显著")
+PRICE_COMPARISON = re.compile(r"(?:股价|收盘价|价格).{0,10}(?:较低|偏低|低位|较高|偏高|高位|便宜|昂贵)")
+PRICE_MA_COMPARISON = re.compile(r"(?:股价|收盘价|价格).{0,12}(?:位于|站上|站稳|高于|低于|突破|跌破|处于).{0,12}(?:均线|均价|移动平均线)")
+UNCERTAIN = re.compile(r"(?:无法|不能).{0,8}(?:判断|推断|确认|确定|认定|评估)|不足以判断|未提供|缺少|缺乏")
+MA_ABOVE = re.compile(r"短期(?:均线|平均(?:价格|成本)).{0,6}(?:高于|大于|超过).{0,6}长期")
+MA_BELOW = re.compile(r"短期(?:均线|平均(?:价格|成本)).{0,6}(?:低于|小于).{0,6}长期")
 
 
 def quantitative_text(text: str):
@@ -40,13 +50,20 @@ def quantitative_text(text: str):
     return NUMBER.search(remainder) or CHINESE_QUANTITY.search(remainder)
 
 
+def term_matches(text: str, term: str):
+    pattern = re.escape(term)
+    if term.isascii():
+        pattern = r"(?<![A-Za-z0-9_])" + pattern + r"(?![A-Za-z0-9_])"
+    return re.finditer(pattern, text, re.I)
+
+
 def check_comparison(text: str):
-    if COMPARISON.search(text) and not any(word in text for word in ("无法判断", "不能判断", "无法评估", "不能认定", "不足以判断")):
+    if (COMPARISON.search(text) or BENCHMARK_COMPARISON.search(text)) and not UNCERTAIN.search(text):
         raise ValueError(f"unsupported valuation or industry comparison must say 无法判断: {text[:120]}")
 
 
 def check_unprovided_metrics(text: str):
-    if any(word in text for word in ("市值", "净利润", "净利率", "毛利率", "负债率", "资金流向")) and not any(
+    if any(word in text for word in ("市值", "净利润", "净利率", "毛利率", "负债率", "资金流向", "护城河")) and not any(
         word in text for word in ("无法判断", "未提供", "缺少", "缺乏", "核实", "核对", "确认", "无法核验")):
         raise ValueError(f"metric is not in this snapshot evidence: {text[:120]}")
 
@@ -56,6 +73,61 @@ def compatible_unit(expected: str, suffix: str) -> bool:
         return True
     return (suffix == "元" and expected.startswith("元/")) or (expected, suffix) in {
         ("元/股", "元每股"), ("元/日", "元每天")}
+
+
+def hypothetical(text: str, match: re.Match) -> bool:
+    prefix = re.split(r"[。；;，,]", text[:match.start()])[-1]
+    if re.search(r"目前|当前|已经|已出现|现有|实际", prefix):
+        return False
+    return bool(re.search(r"若|如果|未来|可能|能否|假如|需警惕|需防范", prefix) or
+                re.match(r"(?:的)?(?:风险|可能性)", text[match.end():]))
+
+
+def check_financial_direction(text: str, facts: dict[str, dict], evidence_ids: list[str]):
+    key = "financials.revenue_growth"
+    if (NEGATIVE_GROWTH.search(text) or POSITIVE_GROWTH.search(text)) and key not in evidence_ids:
+        raise ValueError("growth direction must cite financials.revenue_growth, not industry or another field")
+    if key in evidence_ids:
+        value = float(facts[key]["value"])
+        pattern = NEGATIVE_GROWTH if value >= 0 else POSITIVE_GROWTH
+        for match in pattern.finditer(text):
+            if not hypothetical(text, match):
+                raise ValueError(f"growth direction contradicts {key} ({value:g}%): {text[:150]}")
+        if value == 0 and POSITIVE_GROWTH.search(text):
+            raise ValueError(f"zero revenue growth is not positive growth: {text[:150]}")
+    if "financials.roe" in evidence_ids and re.search(r"(?:ROE|净资产收益率).{0,12}(?:高位|低位|偏高|偏低)", text, re.I) and not any(
+        word in text for word in ("无法判断", "不能判断", "缺少", "缺乏")):
+        raise ValueError("ROE level comparison has no benchmark")
+    ma_key = "market.ma_ratio"
+    if ma_key in evidence_ids:
+        ratio = float(facts[ma_key]["value"])
+        contradiction = MA_BELOW.search(text) if ratio > 0 else MA_ABOVE.search(text) if ratio < 0 else (MA_BELOW.search(text) or MA_ABOVE.search(text))
+        if contradiction and not hypothetical(text, contradiction) and not UNCERTAIN.search(text):
+            raise ValueError("moving-average direction contradicts market.ma_ratio")
+        if re.search(r"(?:比率|比值|比例).{0,6}(?:大于|小于|高于|低于).{0,6}(?:长期|短期)(?:均线|平均成本)", text):
+            raise ValueError("compare two averages, not a dimensionless ratio against an average")
+    if PRICE_COMPARISON.search(text) and not UNCERTAIN.search(text):
+        raise ValueError(f"price-level comparison has no benchmark: {text[:150]}")
+    if PRICE_MA_COMPARISON.search(text) and not UNCERTAIN.search(text):
+        raise ValueError("MA20/MA60 minus one compares two averages, not the closing price versus an average")
+
+
+def explanation_evidence(facts: dict[str, dict]) -> dict:
+    """Keep exact quantities in the immutable card; give the model renderable IDs and signs."""
+    definitions = {"market.momentum_60": "最近六十个交易日的复权价格收益率",
+                   "market.ma_ratio": "短期均线除以长期均线后减一；正值表示短期均线高于长期均线，不能推断股价与均线的位置"}
+    output = {}
+    for key, fact in facts.items():
+        value = fact["value"]
+        item = {"unit": fact["unit"], "value": "{{" + key + "}}"}
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            item["observed_sign"] = "正值" if value > 0 else "负值" if value < 0 else "零值"
+        elif fact["unit"] == "文本":
+            item["value"] = str(value)
+        if key in definitions:
+            item["definition"] = definitions[key]
+        output[key] = item
+    return output
 
 
 def facts_for(result: ScreeningResult, candidate: dict) -> dict[str, dict]:
@@ -80,6 +152,25 @@ def facts_for(result: ScreeningResult, candidate: dict) -> dict[str, dict]:
 
 
 def check_field_claims(content: ResearchContent, facts: dict[str, dict]):
+    # Report independent failures together so bounded repair can fix the full card,
+    # instead of spending one request discovering each successive bad sentence.
+    errors = []
+    parts = [("scope", content.model_copy(update={"reasons": [], "risks": []}))]
+    for section in ("reasons", "risks"):
+        for index, claim in enumerate(getattr(content, section)):
+            parts.append((f"{section}[{index}]", content.model_copy(update={
+                "summary": "", "information_gaps": [], "human_checks": [],
+                "reasons": [claim], "risks": []})))
+    for label, part in parts:
+        try:
+            _check_field_claims(part, facts)
+        except ValueError as exc:
+            errors.append(f"{label}: {exc}")
+    if errors:
+        raise ValueError(" | ".join(errors[:6]))
+
+
+def _check_field_claims(content: ResearchContent, facts: dict[str, dict]):
     for text in [content.summary, *content.information_gaps, *content.human_checks]:
         if FACT_TOKEN.search(text):
             raise ValueError("place field values only in cited reasons or risks; keep summary and checks qualitative")
@@ -100,7 +191,7 @@ def check_field_claims(content: ResearchContent, facts: dict[str, dict]):
                 raise ValueError(f"numeric template must cite its matching field: {key}")
             prefix = FACT_TOKEN.sub("", text[:token.start()])
             mentions = [(match.start(), field) for field, terms in TERMS.items() for term in terms
-                        for match in re.finditer(re.escape(term), prefix, re.I)]
+                        for match in term_matches(prefix, term)]
             if mentions and max(mentions)[1] != facts[key]["field"]:
                 raise ValueError(f"field/evidence mismatch: label {max(mentions)[1]} versus {key}; place each value next to its own metric name")
             if not mentions and len(claim.evidence_ids) > 1:
@@ -117,19 +208,22 @@ def check_field_claims(content: ResearchContent, facts: dict[str, dict]):
             raise ValueError(f"model narrative contains a number ({match.group()}); remove quantities from: {text[:120]}")
         narrative = FACT_TOKEN.sub("", text)
         for field, terms in CLAIM_INDICATORS.items():
-            if any(term.lower() in narrative.lower() for term in terms):
+            if any(next(term_matches(narrative, term), None) is not None for term in terms):
                 if not any(facts[key]["field"] == field for key in claim.evidence_ids):
-                    raise ValueError(f"field/evidence mismatch: {field}")
+                    raise ValueError(f"field/evidence mismatch: {field}; cited {claim.evidence_ids}; sentence: {text[:150]}")
+        check_financial_direction(text, facts, claim.evidence_ids)
         check_comparison(text)
         check_unprovided_metrics(text)
 
 
-def render_value(fact: dict) -> str:
-    value, unit = fact["value"], fact["unit"]
+def format_fact_value(value) -> str:
     if isinstance(value, float):
-        text = f"{value:.4f}".rstrip("0").rstrip(".")
-    else:
-        text = str(value)
+        return f"{value:.4f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def render_value(fact: dict) -> str:
+    text, unit = format_fact_value(fact["value"]), fact["unit"]
     if unit in {"日期", "文本"}:
         return text
     if unit in {"小数收益率", "小数比值"}:
@@ -143,6 +237,23 @@ def render_content(template: ResearchContent, facts: dict[str, dict]) -> Researc
         text = TOKEN_WITH_UNIT.sub(lambda match: "{{" + match.group(1) + "}}", text)
         return FACT_TOKEN.sub(lambda match: render_value(facts[match.group(1)]), text)
     value = template.model_dump()
+    if "本卡采用模板辅助修正" in template.summary:
+        # Field presence is known by the program; a model must not invent missing
+        # dates while the original dates remain visible in the evidence table.
+        gaps = ["未接入新闻或公告正文，无法判断最新事件。", "缺少行业比较基准，无法判断估值是否合理。"]
+        for key, label in (("financials.roe", "ROE"), ("financials.revenue_growth", "营收增长"),
+                           ("financials.report_period", "年报报告期")):
+            if key not in facts:
+                gaps.append(f"未提供{label}，无法判断该指标。")
+        if "financials.report_period" in facts and "market.trade_date" in facts:
+            try:
+                age = (date.fromisoformat(facts["market.trade_date"]["value"]) -
+                       date.fromisoformat(facts["financials.report_period"]["value"])).days
+                if age > 550:
+                    gaps.append("年报数据陈旧，无法判断最新财务表现。")
+            except (ValueError, TypeError):
+                gaps.append("报告期或交易日期格式无效，无法判断年报时效性。")
+        value["information_gaps"] = gaps
     value["summary"] = replace(value["summary"])
     for section in ("reasons", "risks"):
         for item in value[section]:

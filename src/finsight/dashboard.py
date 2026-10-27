@@ -224,6 +224,9 @@ def main():
             for card in cards:
                 with st.expander(f"{card.symbol} · {card.model} · {card.status}", expanded=len(cards) == 1):
                     st.markdown(render_card(card))
+                    if card.error:
+                        with st.expander("诊断详情"):
+                            st.code(card.error, language=None)
                     st.caption(f"模型请求 {card.llm_calls} · 工具执行 {card.tool_calls} · 缓存 {'命中' if card.cache_hit else '未命中'}")
             st.download_button("下载研究报告 Markdown", "\n\n---\n\n".join(render_card(c) for c in cards), file_name="research.md")
         else:
