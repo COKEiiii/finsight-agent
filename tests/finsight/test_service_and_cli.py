@@ -1,8 +1,38 @@
 import json
 from datetime import date
 
+import pytest
+
 from finsight.cli import main
+from finsight.models import StrategyConfig
 from finsight.service import FinSight
+
+
+@pytest.mark.parametrize("changed_config", [False, True])
+def test_historical_screen_audits_full_snapshot_without_mutating_cutoff(tmp_path, bundle, changed_config):
+    service = FinSight(tmp_path)
+    service._save_bundle(bundle)
+    if changed_config:
+        service.config = StrategyConfig(version="historical-audit-regression", min_amount_20=60_000_000)
+    result = service.screen(bundle.meta.snapshot_id, date(2025, 2, 26))
+    assert result.publication_status == "published" and len(result.candidates) == 10
+    assert result.as_of == date(2025, 2, 26) and not result.research_eligible
+    saved = service.store.load_snapshot(bundle.meta.snapshot_id)
+    assert saved.meta.as_of == date(2025, 2, 28) and saved.meta.publishable
+    assert saved["prices"]["trade_date"].max() == "2025-02-28"
+
+
+def test_historical_screen_cannot_backdate_current_stock_states(tmp_path, bundle):
+    bundle.meta.schema_version = 2
+    bundle.meta.membership_symbols = sorted(bundle["universe"]["symbol"])
+    bundle.tables["universe"]["known_on"] = "2025-02-28"
+    service = FinSight(tmp_path)
+    service._save_bundle(bundle)
+    with pytest.raises(ValueError, match="coverage below"):
+        service.screen(bundle.meta.snapshot_id, date(2025, 2, 26))
+    preview = service.screen(bundle.meta.snapshot_id, date(2025, 2, 26), preview=True)
+    assert preview.publication_status == "preview" and preview.candidates == []
+    assert not preview.research_eligible
 
 
 def test_end_to_end_offline_workflow(tmp_path):

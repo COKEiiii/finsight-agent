@@ -59,6 +59,12 @@ After installing a new version or changing Python data models, stop and restart 
 
 Run `finsight --data-dir PATH ...` to isolate experiments. Database/Parquet files are local and excluded from Git. For backups, stop collection/UI writes and copy the entire data directory so SQLite, snapshots and manifests remain consistent.
 
+Order lifecycle reports group events by account, trading date and `order_id`. Planned/submitted quantities are order totals; partial/filled quantities are incremental executions. Import in actual event order. Cancelling a partially filled order closes its remaining quantity without reversing fills. A reused broker ticket on another date is a separate order. An identity conflict within a ticket (symbol, direction, linked signal or strategy) rolls back the entire import. Legacy events without a ticket remain explicitly unlinked.
+
+The manual form keeps a stable `event_id` for retrying the same submission. Choose a new event ID for the next lifecycle event, keeping its order ID unchanged. Order aggregates and executions are separate exports; only the original event export is suitable for journal re-import. The older `unexecuted_events` JSON field remains a count of non-fill events for compatibility; use `execution_review.open_order_count` for currently pending orders. Weekly execution metrics use the latest five saved trading sessions, while order status is cumulative through the snapshot cutoff. Missing plan prices and absent account reconciliation inputs stay unknown.
+
+Holding marks must be positive and finite; unavailable marks stop reconciliation rather than fabricating account values. Industry exposure uses only states known by the report cutoff. A historical selection audits the complete source snapshot, then computes factors at the requested date; this does not grant historical research eligibility or permit future stock states to become visible.
+
 ## Local observations across validation batches
 
 A new universe can reuse per-stock prices, valuations and financial observations from up to eight recent real universe definitions. Synthetic data and future captures are excluded. Only data tables are shared: target membership, current names and risk states are collected again. `seed_snapshot_ids` in the job configuration and `data_parent_snapshot_ids` in the snapshot preserve lineage. An existing snapshot for the same definition remains the primary incremental base.

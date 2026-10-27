@@ -313,13 +313,21 @@ def main():
             except (ValueError, KeyError) as exc:
                 st.error(str(exc))
         if selected and selected.candidates:
+            event_key = f"manual_event_{account}"
+            if event_key not in st.session_state:
+                st.session_state[event_key] = uuid4().hex
+            if st.button("使用新的事件编号"):
+                st.session_state[event_key] = uuid4().hex
             with st.form("manual_trade"):
+                event_id = st.text_input("事件编号（重复提交同一事件时保持不变）", key=event_key)
+                order_id = st.text_input("委托编号（同一交易日内的计划、委托和成交保持一致）")
                 symbol = st.selectbox("记录股票", sorted(set(bundle["universe"]["symbol"])))
                 next_session = next((d for d in bundle["calendar"]["trade_date"] if d > str(bundle.meta.as_of)), None)
                 trading_date = st.date_input("记录日期", value=date.fromisoformat(next_session) if next_session else bundle.meta.as_of)
                 action = st.selectbox("方向", ["buy", "sell"])
                 status = st.selectbox("事件状态", ["submitted", "filled", "partial", "cancelled", "rejected", "planned"])
-                quantity = st.number_input("本次数量", min_value=0, value=100, step=100)
+                quantity = st.number_input("本次数量", min_value=0, value=100, step=100,
+                    help="planned/submitted 填委托总量；partial/filled 填本笔增量成交量。每条新事件使用新的事件编号。")
                 planned = st.number_input("计划价格", min_value=.01, value=10.0, step=.01)
                 executed = st.number_input("实际成交价格（成交事件使用）", min_value=.01, value=10.0, step=.01)
                 fee = st.number_input("实际费用", min_value=0.0, value=5.0, step=.01)
@@ -327,7 +335,8 @@ def main():
                 risk = st.text_input("风险与执行偏差")
                 if st.form_submit_button("保存日志事件"):
                     try:
-                        entry = TradeJournalEntry(event_id=uuid4().hex, account_id=account,
+                        entry = TradeJournalEntry(event_id=event_id.strip(), account_id=account,
+                            order_id=order_id.strip() or None,
                             trade_date=trading_date, symbol=symbol, action=action, status=status,
                             quantity=int(quantity), planned_price=planned,
                             executed_price=executed if status in {"filled", "partial"} else None,
@@ -349,6 +358,10 @@ def main():
         if st.button("生成持仓与周度检查报告"):
             try:
                 report = service.portfolio_report(snapshot_id, capital, account)
+                review = report["execution_review"]
+                st.write(f"截至快照待处理委托 {review['open_order_count']} 笔 · 最近五个交易日成交事件 {review['fill_events']} 笔 · 实际费用 {review['transaction_cost']:.2f} 元")
+                if review["orders"]:
+                    st.dataframe(pd.DataFrame(review["orders"]), hide_index=True)
                 st.json(report)
                 if report["performance"]["curve"]:
                     st.line_chart(pd.DataFrame(report["performance"]["curve"]).set_index("trade_date")[["nav"]])

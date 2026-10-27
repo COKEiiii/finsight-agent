@@ -187,8 +187,12 @@ class FinSight:
         bundle = self.store.load_snapshot(snapshot_id, date_range=(lower, str(day)))
         quality_file = self.store.root / "snapshots" / snapshot_id / "quality.json"
         saved_quality = json.loads(quality_file.read_text(encoding="utf-8")) if quality_file.exists() else {}
-        if day != bundle.meta.as_of or saved_quality.get("config_id") != self.config.config_id:
-            audit(bundle, self.config)
+        if saved_quality.get("config_id") != self.config.config_id:
+            # Batch checks belong to the original snapshot cutoff, not a
+            # historical factor window that intentionally ends before it.
+            original = self.store.load_snapshot(snapshot_id)
+            audit(original, self.config)
+            bundle.meta = original.meta
         result = screen(bundle, self.config, as_of, preview=preview, store=self.store)
         payload = result.model_dump(mode="json")
         self.store.save_run("screen", result.snapshot_id, self.config, payload, result.run_id)
@@ -294,6 +298,7 @@ class FinSight:
                          account: str = "paper", actual_cash: float | None = None,
                          actual_holdings: dict[str, int] | None = None) -> dict:
         bundle = self.store.load_snapshot(snapshot_id)
+        from finsight.journal_review import render_weekly_review
         payload = reconcile(self.store, bundle, capital, account, actual_cash, actual_holdings, self.config)
         payload.update(snapshot_id=bundle.meta.snapshot_id, code_version=code_version())
         run_id = self.store.save_run("portfolio_report", bundle.meta.snapshot_id, self.config, payload)
@@ -301,10 +306,7 @@ class FinSight:
         folder = self.store.artifact_dir(run_id)
         (folder / "portfolio_review.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         pd.DataFrame(payload["performance"]["curve"]).to_csv(folder / "portfolio_nav.csv", index=False, encoding="utf-8-sig")
-        (folder / "weekly_review.md").write_text(
-            "# FinSight 模拟组合复盘\n\n" + f"账户：{account} · 截止：{bundle.meta.as_of}\n\n" +
-            "```json\n" + json.dumps({"cash": payload["cash"], "nav": payload["nav"],
-                "weekly_return": payload["performance"].get("weekly_return"), "flags": payload["flags"],
-                "metrics": payload["performance"].get("metrics")}, ensure_ascii=False, indent=2) + "\n```\n\n" +
-            "请逐项复盘：策略表现、数据缺口、实际执行、人为偏离、市场与行业因素。\n", encoding="utf-8")
+        pd.DataFrame(payload["execution_review"]["orders"]).to_csv(folder / "orders.csv", index=False, encoding="utf-8-sig")
+        pd.DataFrame(payload["executions"]).to_csv(folder / "executions.csv", index=False, encoding="utf-8-sig")
+        (folder / "weekly_review.md").write_text(render_weekly_review(payload), encoding="utf-8")
         return payload

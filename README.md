@@ -169,6 +169,10 @@ finsight journal report --capital 100000 --actual-cash 80000 --actual-holdings h
 
 `holdings.json` 格式为 `{"600036.SH": 100}`。成交事件的 `quantity` 为**本次增量成交量**；不能既导入两笔部分成交，再重复导入包含它们的累计成交量。`event_id` 支持幂等导入；同 ID 内容冲突时整批回滚。每条事件关联已有选股记录和策略版本。同一交易日的事件应按实际执行先后导入。首次录入前，账户应为空仓；导入交易应从账户起点完整记录。
 
+同一笔订单用 `order_id` 关联，按“账户＋交易日＋委托编号”区分，允许券商编号跨日复用。`planned/submitted` 填委托总量，`partial/filled` 填本笔增量成交量；撤单保留已成交部分，剩余数量不再计为待处理。没有委托编号的旧事件保持独立，不猜测对应关系。网页重复提交保留事件编号；录入下一条事件前点击“使用新的事件编号”。
+
+周报导出 `weekly_review.md`、`portfolio_review.json`、`portfolio_nav.csv`、`orders.csv` 和 `executions.csv`，展示待处理委托、最近五个交易日成交、实际费用及相对计划价的不利价差。买入更贵或卖出更便宜均为正价差；缺少计划价时标为未知，费用另计。`orders.csv` 是订单汇总，**不可作为成交日志再次导入**；原始事件请用 `journal export`。未提供实际现金／持仓时，报告不会宣称已对账。
+
 ## 检查与项目结构
 
 ```bash
