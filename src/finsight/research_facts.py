@@ -39,7 +39,7 @@ EMPTY_QUANTITY = re.compile(r"第\s*(?:名|位)|(?:为|达|达到)\s*(?:分|点|
 NEGATIVE_GROWTH = re.compile(r"负增长|营收(?:同比)?(?:下滑|下降|萎缩)|(?:营业)?收入(?:同比)?(?:下滑|下降|收缩)")
 POSITIVE_GROWTH = re.compile(r"正增长|增长强劲|稳健增长|持续增长|增长良好|增长显著")
 PRICE_COMPARISON = re.compile(r"(?:股价|收盘价|价格).{0,10}(?:较低|偏低|低位|较高|偏高|高位|便宜|昂贵)")
-PRICE_MA_COMPARISON = re.compile(r"(?:股价|收盘价|价格).{0,12}(?:位于|站上|站稳|高于|低于|突破|跌破|处于).{0,12}(?:均线|均价|移动平均线)")
+PRICE_MA_COMPARISON = re.compile(r"(?:股价|收盘价|价格)(?:(?!均线|均价|移动平均线)[^。；;，,、]){0,12}(?:位于|站上|站稳|高于|低于|突破|跌破|处于)[^。；;，,、]{0,12}(?:均线|均价|移动平均线)")
 UNCERTAIN = re.compile(r"(?:无法|不能).{0,8}(?:判断|推断|确认|确定|认定|评估)|不足以判断|未提供|缺少|缺乏")
 MA_ABOVE = re.compile(r"短期(?:均线|平均(?:价格|成本)).{0,6}(?:高于|大于|超过).{0,6}长期")
 MA_BELOW = re.compile(r"短期(?:均线|平均(?:价格|成本)).{0,6}(?:低于|小于).{0,6}长期")
@@ -57,15 +57,27 @@ def term_matches(text: str, term: str):
     return re.finditer(pattern, text, re.I)
 
 
-def check_comparison(text: str):
+def check_comparison(text: str, *, verification: bool = False):
     if (COMPARISON.search(text) or BENCHMARK_COMPARISON.search(text)) and not UNCERTAIN.search(text):
+        if verification:
+            clauses = re.split(r"[。；;，,]", text)
+            comparisons = [clause for clause in clauses if COMPARISON.search(clause) or BENCHMARK_COMPARISON.search(clause)]
+            if comparisons and all(re.search(r"核实|核对|检查|确认|验证|评估|判断", clause) and
+                                   ("是否" in clause or "合理性" in clause) for clause in comparisons):
+                return
         raise ValueError(f"unsupported valuation or industry comparison must say 无法判断: {text[:120]}")
 
 
 def check_unprovided_metrics(text: str):
-    if any(word in text for word in ("市值", "净利润", "净利率", "毛利率", "负债率", "资金流向", "护城河")) and not any(
-        word in text for word in ("无法判断", "未提供", "缺少", "缺乏", "核实", "核对", "确认", "无法核验")):
-        raise ValueError(f"metric is not in this snapshot evidence: {text[:120]}")
+    for clause in re.split(r"[。；;，,]", text):
+        for word in ("市值", "净利润", "净利率", "毛利率", "负债率", "资金流向", "护城河"):
+            if word not in clause or any(term in clause for term in (
+                "无法判断", "未提供", "缺少", "缺乏", "核实", "核对", "确认", "无法核验")):
+                continue
+            prefix = clause[:clause.index(word)]
+            if re.search(r"(?:不代表|不等于|(?:不能|无法).{0,8}(?:推断|判断|证明|说明)).{0,12}$", prefix):
+                continue
+            raise ValueError(f"metric is not in this snapshot evidence: {clause[:120]}")
 
 
 def compatible_unit(expected: str, suffix: str) -> bool:
@@ -171,7 +183,9 @@ def check_field_claims(content: ResearchContent, facts: dict[str, dict]):
 
 
 def _check_field_claims(content: ResearchContent, facts: dict[str, dict]):
-    for text in [content.summary, *content.information_gaps, *content.human_checks]:
+    texts = [(content.summary, False), *[(text, False) for text in content.information_gaps],
+             *[(text, True) for text in content.human_checks]]
+    for text, verification in texts:
         if FACT_TOKEN.search(text):
             raise ValueError("place field values only in cited reasons or risks; keep summary and checks qualitative")
         if EMPTY_QUANTITY.search(text):
@@ -179,7 +193,7 @@ def _check_field_claims(content: ResearchContent, facts: dict[str, dict]):
         match = quantitative_text(text)
         if match:
             raise ValueError(f"model narrative contains a number ({match.group()}); omit quantities and dates from: {text[:120]}")
-        check_comparison(text)
+        check_comparison(text, verification=verification)
         check_unprovided_metrics(text)
     for claim in content.reasons + content.risks:
         if any(key not in facts for key in claim.evidence_ids):

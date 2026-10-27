@@ -254,6 +254,10 @@ def main():
                 st.error(f"{failed} 张研究卡未成功生成，选股结果已保留。")
             else:
                 st.success("研究卡已保存")
+        if provider == "deepseek":
+            usage = service.research_usage("deepseek", model)
+            st.caption(f"本项目该模型已记录：输入 {usage['input_tokens']:,} + 输出 {usage['output_tokens']:,} = {usage['reported_tokens']:,} tokens；缓存复用 {usage['cache_hits']} 次。")
+            st.caption("此计数包含失败研究记录返回的用量；不包含连接测试及其他应用，不能作为平台剩余额度。")
         research_runs = [r for r in service.store.runs("research") if selected and
                          json.loads(r["payload"]).get("screen_run_id") == selected.run_id]
         if research_runs:
@@ -267,6 +271,7 @@ def main():
                         with st.expander("诊断详情"):
                             st.code(card.error, language=None)
                     st.caption(f"模型请求 {card.llm_calls} · 工具执行 {card.tool_calls} · 缓存 {'命中' if card.cache_hit else '未命中'}")
+                    st.caption(f"本次记录 tokens：输入 {card.input_tokens:,} · 输出 {card.output_tokens:,}")
             st.download_button("下载研究报告 Markdown", "\n\n---\n\n".join(render_card(c) for c in cards), file_name="research.md")
         else:
             st.info("先运行选股，再选择本地模型或离线模板生成报告。")

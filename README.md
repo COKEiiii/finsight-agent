@@ -62,6 +62,17 @@ DEEPSEEK_MODEL=deepseek-flash
 
 也可显式执行 `finsight research --run RUN_ID --provider deepseek`。API Key 只从环境读取，不保存到报告或数据库。
 
+若通过兼容平台调用 DeepSeek，在 `.env` 中使用该平台提供的 `DEEPSEEK_BASE_URL` 和 `DEEPSEEK_MODEL`。网页选择“DeepSeek · API”后读取这些配置；默认仍使用本地 Ollama。建议先验证一只，再扩大到少量候选；已有的三次请求、输出长度和缓存限制继续生效。
+
+查看本项目已保存研究记录的 token 用量（不会调用模型）：
+
+```bash
+finsight usage --provider deepseek
+finsight usage --provider deepseek --model MODEL_NAME
+```
+
+统计包含失败研究记录中已返回的输入与输出用量；缓存卡的原始生成用量不会再次累加。网页也显示逐卡用量与所选模型的累计记录。连接测试、其他应用及未返回 `usage` 的请求不包含在此计数中，因此它不是平台剩余额度。平台自身的免费额度与用完即停设置需在平台管理。
+
 ## v0.2 全主板采集与发布
 
 建议先完成验证批次，再启动全市场任务。采集在后台运行；中断后从已保存的请求继续。默认由 4 个常驻工作进程处理，所有进程合计每秒最多发起 1 个新请求；单股超时 30 秒，批量超时至少 120 秒，失败最多重试 2 次（等待 5、30 秒）。

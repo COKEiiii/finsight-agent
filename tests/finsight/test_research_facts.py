@@ -305,3 +305,43 @@ def test_repair_reports_all_unsupported_comparisons_in_one_request(tmp_path):
     payload["reasons"][0]["text"] = "缺少基准收益数据，无法判断是否优于市场。"
     payload["risks"][0]["text"] = "缺少估值比较依据，无法判断市盈率和市净率是否偏高。"
     assert validate_content(payload, facts)
+
+
+@pytest.mark.parametrize("check", ["结合行业与同业数据人工判断估值是否合理。", "核实市盈率和市净率的合理性。"])
+def test_human_verification_questions_are_not_unsupported_conclusions(tmp_path, check):
+    _, _, candidate, facts = ready(tmp_path)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["human_checks"] = [check]
+    assert validate_content(payload, facts)
+    payload["reasons"][0] = {"text": "估值合理。", "evidence_ids": ["valuation.pe_ttm"]}
+    with pytest.raises(ValueError, match="comparison"):
+        validate_content(payload, facts)
+
+
+def test_assertion_in_a_check_is_not_legalized_by_a_following_question(tmp_path):
+    _, _, candidate, facts = ready(tmp_path)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["human_checks"] = ["估值合理，请核实是否存在其他风险。"]
+    with pytest.raises(ValueError, match="comparison"):
+        validate_content(payload, facts)
+
+
+def test_explicit_disclaimer_is_not_an_invented_metric(tmp_path):
+    _, _, candidate, facts = ready(tmp_path)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["reasons"][0] = {"text": "策略排名本身不代表市值或绝对优劣。", "evidence_ids": ["selection.rank"]}
+    assert validate_content(payload, facts)
+    payload["reasons"][0]["text"] += "公司净利润高速增长。"
+    with pytest.raises(ValueError, match="not in this snapshot"):
+        validate_content(payload, facts)
+
+
+def test_positive_trend_does_not_assign_the_average_comparison_to_price(tmp_path):
+    _, _, candidate, facts = ready(tmp_path)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["reasons"][0] = {"text": "动量与均线比值均为正，说明历史区间内价格趋势向上、短期均线高于长期均线；后续趋势仍需核实。",
+                             "evidence_ids": ["market.momentum_60", "market.ma_ratio"]}
+    assert validate_content(payload, facts)
+    payload["reasons"][0]["text"] = "价格高于短期均线。"
+    with pytest.raises(ValueError, match="compares two averages"):
+        validate_content(payload, facts)

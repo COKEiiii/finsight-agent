@@ -41,3 +41,34 @@ def test_cli_returns_parseable_json_and_useful_errors(tmp_path, capsys, monkeypa
     monkeypatch.setattr(FinSight, "sync", failed_sync)
     assert main(root + ["sync", "--provider", "akshare"]) == 2
     assert "checkpoints preserved" in capsys.readouterr().err
+
+
+def test_usage_counts_failures_but_not_cached_generation_twice(tmp_path, capsys):
+    from finsight.research import demo_content, evidence_for
+
+    service = FinSight(tmp_path)
+    snapshot = service.sync("demo", date(2025, 2, 28), date(2024, 1, 2))["snapshot_id"]
+    result = service.screen(snapshot)
+    value = demo_content(result.candidates[0], evidence_for(result, result.candidates[0])).model_dump()
+    class Adapter:
+        provider = "deepseek"
+        base_url = "http://fixture"
+        model = "deepseek-fixture"
+        calls = 0
+        def complete(self, *args, **kwargs):
+            self.calls += 1
+            return {"message": {"content": json.dumps(value)}, "input_tokens": 13, "output_tokens": 7}
+    adapter = Adapter()
+    service.research(result.run_id, "deepseek", limit=1, adapter=adapter)
+    cached = service.research(result.run_id, "deepseek", limit=1, adapter=adapter)
+    assert adapter.calls == 1 and cached[0].cache_hit
+    value["reasons"][0] = {"text": "估值合理。", "evidence_ids": ["valuation.pe_ttm"]}
+    adapter.model = "deepseek-failing"
+    failed = service.research(result.run_id, "deepseek", limit=1, adapter=adapter)
+    assert failed[0].status == "failed"
+    usage = service.research_usage()
+    assert usage["reported_tokens"] == 80 and usage["llm_calls"] == 4 and usage["cache_hits"] == 1
+    assert sum(row["failed_cards"] for row in usage["by_model"]) == 1
+    assert main(["--data-dir", str(tmp_path), "usage", "--model", "deepseek-fixture"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["reported_tokens"] == 20 and output["cache_hits"] == 1

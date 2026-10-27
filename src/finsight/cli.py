@@ -58,6 +58,9 @@ def parser() -> argparse.ArgumentParser:
     backtest.add_argument("--end", type=date.fromisoformat, default=date(2024, 12, 31))
     backtest.add_argument("--capital", type=float, default=100_000)
     commands.add_parser("status", help="list snapshot quality and runs")
+    usage = commands.add_parser("usage", help="recorded research tokens; no API request or platform balance lookup")
+    usage.add_argument("--provider", choices=["deepseek", "ollama", "demo", "all"], default="deepseek")
+    usage.add_argument("--model")
     journal = commands.add_parser("journal", help="manual simulation trade journal")
     journal_cmd = journal.add_subparsers(dest="journal_command", required=True)
     imp = journal_cmd.add_parser("import")
@@ -173,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
                     "collection_jobs": [{key: job[key] for key in ("job_id", "status", "snapshot_id", "error")}
                                         for job in Jobs(service.store).list()[:10]],
                     "runs": [{k: row[k] for k in ("run_id", "kind", "snapshot_id", "created_at")} for row in service.store.runs()]})
+        elif args.command == "usage":
+            output(service.research_usage(args.provider, args.model))
         elif args.command == "journal":
             if args.journal_command == "import":
                 output(import_journal(service.store, args.path.read_text(encoding="utf-8-sig")))

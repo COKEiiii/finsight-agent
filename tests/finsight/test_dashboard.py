@@ -51,6 +51,30 @@ def test_failed_research_explains_error_and_retains_diagnostics(tmp_path, monkey
     assert any("request timed out" in item.value for item in app.code)
 
 
+def test_deepseek_usage_view_never_calls_model_on_refresh(tmp_path, monkeypatch):
+    import pytest
+
+    from finsight.models import ResearchCard
+    from finsight.research import ChatAdapter
+
+    monkeypatch.setenv("FINSIGHT_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_MODEL", "usage-fixture")
+    service = FinSight(tmp_path)
+    snapshot = service.sync("demo", date(2025, 2, 28), date(2024, 1, 2))["snapshot_id"]
+    result = service.screen(snapshot)
+    card = ResearchCard(run_id=result.run_id, symbol=result.candidates[0]["symbol"], model="usage-fixture",
+                        prompt_version="fixture", status="failed", llm_calls=1, input_tokens=13, output_tokens=7)
+    service.store.save_run("research", snapshot, service.config, {"screen_run_id": result.run_id,
+        "provider": "deepseek", "cards": [card.model_dump(mode="json")]})
+    monkeypatch.setattr(ChatAdapter, "complete", lambda *a, **kw: pytest.fail("usage view must not call the model"))
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    next(item for item in app.selectbox if item.label == "研究模型来源").select("deepseek").run()
+    assert not app.exception
+    assert any("= 20 tokens" in item.value for item in app.caption)
+    app.run()
+    assert not app.exception and any("= 20 tokens" in item.value for item in app.caption)
+
+
 def test_create_demo_switches_to_new_snapshot_even_when_older_date(tmp_path, monkeypatch):
     monkeypatch.setenv("FINSIGHT_DATA_DIR", str(tmp_path))
     FinSight(tmp_path).sync("demo", date(2026, 2, 27), date(2025, 1, 2))
