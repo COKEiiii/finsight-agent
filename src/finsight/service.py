@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -49,10 +50,15 @@ class FinSight:
             members = [normalize_symbol(s) for s in symbols] if symbols else (None if mainboard else [normalize_symbol(s) for s in SAMPLE_CODES])
             uid = universe_id(mainboard, members, limit)
             previous = self.store.latest(uid)
+            from finsight.data.seeds import select_seeds
+            now = clock() if clock else datetime.now(ZoneInfo("Asia/Shanghai"))
+            cutoff = now.date() if now.hour >= 18 else now.date() - timedelta(days=1)
+            seeds = select_seeds(self.store, uid, min(as_of or cutoff, cutoff), now) if previous is None else []
             config = {"as_of": str(as_of) if as_of else None, "start": str(start) if start else None,
                 "symbols": symbols, "mainboard": mainboard, "limit": limit,
                 "timeout": timeout, "retries": retries, "workers": workers, "interval": interval,
                 "universe_id": uid, "base_snapshot_id": previous.snapshot_id if previous else None,
+                "seed_snapshot_ids": seeds,
                 "strategy": self.config.model_dump()}
             self.store.register_strategy(self.config)
             job = jobs.create(config)
@@ -108,7 +114,9 @@ class FinSight:
                     previous_handler = signal.getsignal(signal.SIGTERM)
                     signal.signal(signal.SIGTERM, lambda *_: broker.cancel_event.set())
                 base = self.store.load_snapshot(config["base_snapshot_id"]) if config.get("base_snapshot_id") else None
-                bundle = Collector(broker, config, base).fetch()
+                seeds = [self.store.load_snapshot(identifier, table_names=("prices", "valuations", "financials"))
+                         for identifier in config.get("seed_snapshot_ids", [])]
+                bundle = Collector(broker, config, base, seeds=seeds).fetch()
                 jobs.update(job_id, progress={"phase": "quality_and_snapshot"})
                 quality = self._save_bundle(bundle)
                 result = self.screen(bundle.meta.snapshot_id, preview=not quality["publishable"])

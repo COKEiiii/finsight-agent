@@ -75,6 +75,7 @@ class MarketSnapshot(StrictModel):
     coverage: dict[str, Any] = Field(default_factory=dict)
     publication_status: Literal["published", "preview", "blocked"] = "published"
     job_id: str | None = None
+    data_parent_snapshot_ids: list[str] = Field(default_factory=list)
 
     @property
     def research_eligible(self) -> bool:

@@ -59,6 +59,10 @@ def main():
             recent = jobs.list()[:20]
             if not recent:
                 return
+            latest_published = service.store.latest(published_only=True)
+            recent.sort(key=lambda item: (item["status"] in {"queued", "running", "cancelling"},
+                latest_published is not None and item["snapshot_id"] == latest_published.snapshot_id,
+                item["config"].get("mainboard", False), item["created_at"]), reverse=True)
             by_job = {job["job_id"]: job for job in recent}
             job_id = st.selectbox("采集任务", list(by_job), key="job_choice",
                 format_func=lambda identifier: f"{by_job[identifier]['status']} · {by_job[identifier]['config']['universe_id'][:12]} · {identifier[:8]}")
@@ -76,7 +80,10 @@ def main():
                 st.caption(f"覆盖率 {coverage.get('coverage', 0):.2%} · {progress.get('publication_status', '预览')}")
             if job["error"]:
                 st.error(job["error"])
-            if job["status"] in {"failed", "cancelled", "partial"} and st.button("恢复该任务", key=f"resume_{job_id}"):
+            interrupted = job["status"] in {"queued", "running", "cancelling"} and not jobs.alive(job["pid"])
+            if interrupted:
+                st.warning("采集进程已停止，成功请求保留在本地，可恢复该任务。")
+            if (interrupted or job["status"] in {"failed", "cancelled", "partial"}) and st.button("恢复该任务", key=f"resume_{job_id}"):
                 service.sync("akshare", resume=job_id, background=True)
                 st.rerun()
             if job["status"] in {"queued", "running"} and st.button("取消该任务", key=f"cancel_{job_id}"):
@@ -96,6 +103,9 @@ def main():
         if preferred and preferred.snapshot_id in choices:
             choices.remove(preferred.snapshot_id)
             choices.insert(0, preferred.snapshot_id)
+            st.caption(f"最新可用：{preferred.as_of} · {preferred.universe_scope}")
+            if st.button("查看最新可用榜单", width="stretch"):
+                st.session_state["snapshot_choice"] = preferred.snapshot_id
         snapshot_id = st.selectbox("数据快照", choices, format_func=lambda s: (
             f"{'演示' if by_id[s].synthetic else 'AKShare'} · {by_id[s].as_of} · "
             f"{'待复核' if by_id[s].schema_version < 2 and not by_id[s].synthetic else by_id[s].publication_status} · {s[-6:]}"), key="snapshot_choice")
@@ -115,7 +125,8 @@ def main():
     if bundle.meta.synthetic:
         st.info("当前为合成演示数据；图表与选股结果用于展示软件流程。")
     if not quality["research_eligible"]:
-        st.warning("历史验证未通过 · 回测结果标记为研究演示。")
+        st.warning("历史回测验证未通过，相关回测标记为研究演示；当日选股按当前数据质量单独判定。")
+    st.caption(f"快照截止日期：{bundle.meta.as_of} · 抓取时间：{bundle.meta.captured_at:%Y-%m-%d %H:%M} · 范围：{bundle.meta.universe_scope}")
     columns = st.columns(4)
     columns[0].metric("数据日期", str(bundle.meta.as_of))
     columns[1].metric("股票范围", len(bundle.meta.membership_symbols) if bundle.meta.membership_symbols else len(set(bundle["universe"]["symbol"])))
@@ -155,6 +166,11 @@ def main():
     with rank_tab:
         st.subheader("固定规则候选股")
         st.caption("年报质量 40% · 趋势 40% · 估值 20%；同一快照与配置可复现。")
+        if quality.get("publication_status") == "blocked":
+            if any("no stock state known at cutoff" in issue for issue in quality["issues"]):
+                st.error(f"股票状态首次取得日晚于 {bundle.meta.as_of}，当前快照不能用于该日选股。请从左侧查看最新可用榜单，或采集抓取当日收盘数据。")
+            else:
+                st.error("当前快照未通过批次校验。请查看“数据状态”中的原因，或从左侧切换到最新可用榜单。")
         if st.button("运行选股", type="primary", disabled=quality.get("publication_status") == "blocked"):
             try:
                 selected = service.screen(snapshot_id, preview=not quality["publishable"])
@@ -170,6 +186,8 @@ def main():
                 st.dataframe(table[["rank", "symbol", "name", "industry", "score", "roe", "revenue_growth",
                                     "momentum_60", "ma_ratio", "pe_ttm", "pb"]], hide_index=True, width="stretch")
                 st.bar_chart(table.set_index("symbol")[["score"]])
+                st.caption("候选行业分布（按股票数量）")
+                st.bar_chart(table.groupby("industry").size().rename("数量"))
                 st.download_button("下载候选股 CSV", table.to_csv(index=False).encode("utf-8-sig"),
                                    file_name="candidates.csv", mime="text/csv")
             else:

@@ -89,6 +89,7 @@ def test_thirty_case_suite_requires_real_candidates_and_tracks_synthetic_changes
     assert len(cases) == 30
     assert sum(case["scenario"] == "actual_candidate" for case in cases) == 10
     assert sum(case["synthetic_modification"] for case in cases) == 20
+    assert all(case["candidate"]["report_period"].endswith("12-31") for case in cases if case["scenario"] == "stale_report")
     report = evaluate_run(service.store, result.run_id, allow_demo=True)
     assert report["case_count"] == 30 and report["models"] == {}
 

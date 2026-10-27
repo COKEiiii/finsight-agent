@@ -26,9 +26,11 @@ def merge_observations(old: pd.DataFrame, new: pd.DataFrame, keys: list[str]) ->
         return canonical(old)
     # Unchanged observations keep their original first-fetch timestamp. Revisions get a new version.
     columns = sorted((set(old.columns) | set(new.columns)) - {"fetched_at", "loaded_at"})
-    left, right = old.reindex(columns=columns), new.reindex(columns=columns)
-    old_hash = pd.util.hash_pandas_object(left, index=False)
-    new_hash = pd.util.hash_pandas_object(right, index=False)
+    # Parquet/nullable columns may switch int/float dtypes without changing their values.
+    # Hash both observations in a common dtype space so that this does not create a revision.
+    comparable = pd.concat([old.reindex(columns=columns), new.reindex(columns=columns)], ignore_index=True)
+    hashes = pd.util.hash_pandas_object(comparable, index=False)
+    old_hash, new_hash = hashes.iloc[:len(old)], hashes.iloc[len(old):]
     fingerprints = dict(zip(pd.MultiIndex.from_frame(old[keys]), old_hash))
     fetched = dict(zip(pd.MultiIndex.from_frame(old[keys]), old.get("fetched_at", pd.Series(index=old.index, dtype=str))))
     new = new.copy()
@@ -40,7 +42,8 @@ def merge_observations(old: pd.DataFrame, new: pd.DataFrame, keys: list[str]) ->
 
 
 class Collector(AKShareProvider):
-    def __init__(self, broker: RequestBroker, config: dict, base: SnapshotBundle | None = None):
+    def __init__(self, broker: RequestBroker, config: dict, base: SnapshotBundle | None = None,
+                 seeds: list[SnapshotBundle] | None = None):
         super().__init__(broker.store.root, timeout=broker.timeout, retries=broker.retries)
         self.broker, self.config, self.base = broker, config, base
         self.jobs, self.job_id = Jobs(broker.store), broker.job_id
@@ -58,6 +61,26 @@ class Collector(AKShareProvider):
                 self.issues.append("近七日东方财富批量财报曾超时；行情使用 BaoStock，财务仍取单股年报加权 ROE。")
         self.base_groups = {key: {s: f for s, f in base[key].groupby("symbol", sort=False)} if base is not None and "symbol" in base[key] else {}
                             for key in ("prices", "financials", "valuations")}
+        if base is not None and base.meta.captured_at > broker.clock():
+            raise ValueError("base observations were captured after the current job time")
+        self.seeds = sorted(seeds or [], key=lambda item: item.meta.captured_at)
+        protected = {key: set(groups) for key, groups in self.base_groups.items()}
+        for seed in self.seeds:
+            if seed.meta.synthetic or seed.meta.source != "akshare" or seed.meta.captured_at > broker.clock():
+                raise ValueError("seed observations must be real and already captured")
+            for key in self.base_groups:
+                for symbol, frame in seed[key].groupby("symbol", sort=False):
+                    if symbol in protected[key]:
+                        continue
+                    old = self.base_groups[key].get(symbol)
+                    if old is None:
+                        self.base_groups[key][symbol] = frame
+                    elif key != "financials":
+                        self.base_groups[key][symbol] = merge_observations(old, frame, ["symbol", "trade_date"])
+                    else:
+                        combined = pd.concat([old, frame], ignore_index=True)
+                        identity = [column for column in ("symbol", "report_period", "announcement_date", "roe", "revenue_growth", "source", "roe_basis") if column in combined]
+                        self.base_groups[key][symbol] = canonical(combined.sort_values("available_on", kind="stable").drop_duplicates(identity, keep="first"))
 
     def call(self, method: str, **kwargs) -> pd.DataFrame:
         ttl = 86400 if self.sample_mode and method == "stock_individual_info_em" else None
@@ -338,13 +361,25 @@ class Collector(AKShareProvider):
         if requested > cutoff or calendar["trade_date"].max() < str(requested):
             raise ValueError("requested session is not complete or exchange calendar is stale")
         day = calendar.loc[calendar["trade_date"] <= str(requested), "trade_date"].max()
+        if any(str(parent.meta.as_of) > day for parent in ([self.base] if self.base else []) + self.seeds):
+            raise ValueError("local observation seed exceeds the requested snapshot date")
         start = date.fromisoformat(self.config["start"]) if self.config.get("start") else date.fromisoformat(day) - timedelta(days=430)
         if str(start) >= day:
             raise ValueError("start must precede snapshot date")
         self.config["as_of"], self.config["start"] = day, str(start)
         self.jobs.update(self.job_id, config=self.config)
         symbols = self.config.get("symbols")
-        stocks = self.stock_list() if not self.sample_mode else self.sample_list(symbols or list(SAMPLE_CODES))
+        if not self.sample_mode:
+            stocks = self.stock_list()
+        elif self.fallback_market:
+            requested_symbols = {normalize_symbol(symbol) for symbol in symbols or SAMPLE_CODES}
+            stocks = self.stock_list()
+            absent = requested_symbols - set(stocks["symbol"])
+            if absent:
+                raise ValueError("requested stocks absent from the current exchange list: " + ", ".join(sorted(absent)))
+            stocks = stocks[stocks["symbol"].isin(requested_symbols)].copy()
+        else:
+            stocks = self.sample_list(symbols or list(SAMPLE_CODES))
         limit = self.config.get("limit")
         if limit and len(stocks) > limit:
             stocks = stocks.sort_values("symbol").iloc[np.linspace(0, len(stocks) - 1, limit, dtype=int)].copy()
@@ -356,7 +391,9 @@ class Collector(AKShareProvider):
         if self.base and self.base.meta.universe_id != uid:
             raise ValueError("base snapshot belongs to a different universe definition")
         self.jobs.update(self.job_id, progress={"phase": "financial_bulk", "symbols_total": len(stocks),
-                                              "universe_id": uid, "mode": "incremental" if self.base else "bootstrap"})
+            "universe_id": uid, "mode": "incremental" if self.base else "bootstrap_with_local_data" if self.seeds else "bootstrap",
+            "seeded_price_symbols": len(self.base_groups["prices"]),
+            "seed_snapshot_ids": [item.meta.snapshot_id for item in self.seeds]})
         annual = []
         if self.mainboard and not self.fallback_market:
             lower_year = date.fromisoformat(day).year - 2 if self.base else start.year - 2
@@ -417,5 +454,6 @@ class Collector(AKShareProvider):
         return SnapshotBundle(MarketSnapshot(snapshot_id=f"akshare-{day}-{uuid4().hex[:10]}", as_of=date.fromisoformat(day),
             captured_at=self.broker.clock(), source="akshare", schema_version=2, universe_id=uid,
             membership_id=membership_id(members), membership_symbols=members, universe_complete=full, job_id=self.job_id,
+            data_parent_snapshot_ids=([self.base.meta.snapshot_id] if self.base else []) + [item.meta.snapshot_id for item in self.seeds],
             universe_scope="current mainboard" if full else f"{'mainboard validation' if self.mainboard else 'sample'}:{len(stocks)}",
             quality_issues=issues), tables)

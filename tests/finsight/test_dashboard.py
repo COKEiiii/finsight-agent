@@ -59,3 +59,10 @@ def test_legacy_quality_report_is_rechecked_before_displaying_publishable(tmp_pa
     assert not app.exception
     assert app.metric[3].value == "阻止发布"
     assert next(button for button in app.button if button.label == "运行选股").disabled
+    service.sync("demo", date(2025, 3, 4), date(2024, 1, 2))
+    app.run()
+    assert app.metric[3].value == "阻止发布"  # Existing selection stays explicit.
+    next(button for button in app.button if button.label == "查看最新可用榜单").click().run()
+    assert not app.exception
+    assert app.metric[0].value == "2025-03-04"
+    assert not next(button for button in app.button if button.label == "运行选股").disabled

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from datetime import timedelta
 from uuid import uuid4
 
 from finsight.data.store import Store
@@ -11,6 +10,7 @@ from finsight.models import ScreeningResult
 from finsight.research import ChatAdapter, research_candidate
 
 SCENARIOS = ("actual_candidate", "missing_roe", "stale_report", "negative_growth", "unit_conversion")
+CASE_VERSION = "research_cases_v0.2"
 
 
 def build_cases(result: ScreeningResult, *, allow_demo: bool = False) -> list[dict]:
@@ -27,12 +27,13 @@ def build_cases(result: ScreeningResult, *, allow_demo: bool = False) -> list[di
             if scenario == "missing_roe":
                 candidate.pop("roe", None)
             elif scenario == "stale_report":
-                candidate["report_period"] = str(result.as_of - timedelta(days=730))
+                candidate["report_period"] = f"{result.as_of.year - 3}-12-31"
             elif scenario == "negative_growth":
                 candidate["revenue_growth"] = -abs(float(candidate["revenue_growth"])) - 1
             elif scenario == "unit_conversion":
                 candidate["amount_20"] = float(candidate["amount_20"]) * 10000
             cases.append({"case_id": f"{scenario}-{index + 1:02d}", "scenario": scenario,
+                          "case_version": CASE_VERSION,
                           "symbol": candidate["symbol"], "candidate": candidate,
                           "source_run_id": result.run_id, "source_snapshot_id": result.snapshot_id,
                           "synthetic_modification": scenario != "actual_candidate"})
@@ -71,6 +72,7 @@ def evaluate_run(store: Store, run_id: str, *, models: tuple[str, ...] = (),
     folder = store.artifact_dir(suite_id)
     (folder / "cases.json").write_text(json.dumps(cases, ensure_ascii=False, indent=2), encoding="utf-8")
     output = {"suite_id": suite_id, "source_run_id": run_id, "case_count": 30,
+              "case_version": CASE_VERSION,
               "actual_candidates": sum(c["scenario"] == "actual_candidate" for c in cases),
               "synthetic_scenarios": 20, "models": {}, "exports": str(folder),
               "human_review": "pending; serious factual errors and manual revision effort require user audit"}

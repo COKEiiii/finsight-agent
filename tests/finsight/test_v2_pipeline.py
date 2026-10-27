@@ -282,6 +282,53 @@ def test_duplicate_job_and_cancellation_are_durable(store):
     assert jobs.resume(first["job_id"])["status"] == "queued"
 
 
+def test_new_universe_reuses_per_stock_history_without_copying_membership(tmp_path):
+    service = FinSight(tmp_path)
+    t0 = datetime(2025, 5, 30, 18, tzinfo=ZoneInfo("Asia/Shanghai"))
+    first = service.sync("akshare", t0.date(), date(2024, 1, 2), symbols=["600036", "600519"],
+        api=IncrementalAPI(), clock=lambda: t0, retries=0, interval=0)
+    api = IncrementalAPI()
+    t1 = t0 + timedelta(days=3)
+    second = service.sync("akshare", t1.date(), date(2024, 1, 2), symbols=["600036", "000001"],
+        api=api, clock=lambda: t1, retries=0, interval=0)
+    assert second["publishable"]
+    shared = [lower for code, lower, _ in api.price_ranges if code == "600036"]
+    new = [lower for code, lower, _ in api.price_ranges if code == "000001"]
+    assert shared and all(lower > "20240102" for lower in shared)
+    assert new and all(lower == "20240102" for lower in new)
+    result = service.store.load_snapshot(second["snapshot_id"])
+    assert result.meta.data_parent_snapshot_ids == [first["snapshot_id"]]
+    assert result.meta.membership_id != service.store.load_snapshot(first["snapshot_id"]).meta.membership_id
+    assert set(result["universe"]["symbol"]) == {"600036.SH", "000001.SZ"}
+    assert "600519.SH" not in set(result["prices"]["symbol"])
+    finance = result["financials"]
+    assert "2025-05-30" in set(finance.loc[finance["symbol"] == "600036.SH", "available_on"])
+    assert set(finance.loc[finance["symbol"] == "000001.SZ", "available_on"]) == {"2025-06-02"}
+
+
+def test_future_seed_and_synthetic_data_do_not_enter_real_collection(bundle, store):
+    from finsight.data.collector import Collector
+    from finsight.data.requests import RequestBroker
+    from finsight.data.seeds import select_seeds
+
+    now = datetime(2025, 3, 3, 18, tzinfo=ZoneInfo("Asia/Shanghai"))
+    value = version2(copy.deepcopy(bundle))
+    value.meta.snapshot_id = "future-seed"
+    value.meta.synthetic = False
+    value.meta.source = "akshare"
+    value.meta.captured_at = now + timedelta(days=1)
+    store.save_snapshot(value)
+    assert select_seeds(store, "another-universe", now.date(), now) == []
+    job = Jobs(store).create({"case": "future-seed"})
+    broker = RequestBroker(store, job["job_id"], api=IncrementalAPI(), clock=lambda: now, interval=0)
+    with pytest.raises(ValueError, match="already captured"):
+        Collector(broker, {}, seeds=[value])
+    value.meta.captured_at = now
+    value.meta.synthetic = True
+    with pytest.raises(ValueError, match="must be real"):
+        Collector(broker, {}, seeds=[value])
+
+
 def test_five_day_rollout_counts_distinct_real_sessions_only(bundle, store):
     value = version2(bundle)
     value.meta.synthetic = False
@@ -301,6 +348,8 @@ def test_five_day_rollout_counts_distinct_real_sessions_only(bundle, store):
 def test_unchanged_observation_keeps_original_fetch_time():
     old = pd.DataFrame([{"symbol": "600000.SH", "trade_date": "2025-01-02", "close": 10., "fetched_at": "old"}])
     new = old.assign(fetched_at="new")
+    assert merge_observations(old, new, ["symbol", "trade_date"])["fetched_at"].iloc[0] == "old"
+    old["volume"], new["volume"] = 100, 100.0
     assert merge_observations(old, new, ["symbol", "trade_date"])["fetched_at"].iloc[0] == "old"
     new["close"] = 11.
     assert merge_observations(old, new, ["symbol", "trade_date"])["fetched_at"].iloc[0] == "new"

@@ -51,6 +51,12 @@ After installing a new version or changing Python data models, stop and restart 
 
 Run `finsight --data-dir PATH ...` to isolate experiments. Database/Parquet files are local and excluded from Git. For backups, stop collection/UI writes and copy the entire data directory so SQLite, snapshots and manifests remain consistent.
 
+## Local observations across validation batches
+
+A new universe can reuse per-stock prices, valuations and financial observations from up to eight recent real universe definitions. Synthetic data and future captures are excluded. Only data tables are shared: target membership, current names and risk states are collected again. `seed_snapshot_ids` in the job configuration and `data_parent_snapshot_ids` in the snapshot preserve lineage. An existing snapshot for the same definition remains the primary incremental base.
+
+Unchanged numerical observations retain their original fetch time even when Parquet or nullable values change integer/float representation. The current 20-stock scheduler also uses exchange identities and the common industry source when the individual metadata endpoint is unavailable.
+
 ## Provider failures
 
 Upstream requests run in terminable subprocesses, have finite retries, and only successful responses enter the raw cache. Whole-batch failures return a nonzero exit code. Partial per-stock failures are shown in quality/exclusion reports. A real source is never replaced with synthetic data automatically.
