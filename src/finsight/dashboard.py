@@ -306,6 +306,23 @@ def main():
         st.divider()
         st.write("人工模拟交易日志")
         account = st.text_input("模拟账户标识", value="paper")
+        st.caption("上方为目标仓位参考；账户调仓计划会使用日志还原的当前净值，扣除已有持仓后计算买卖差额。")
+        if selected and st.button("生成账户调仓计划"):
+            try:
+                proposal = service.rebalance(selected.run_id, capital, account)
+                label = {"blocked": "暂不可生成", "ready": "待人工核对", "reference": "非月末参考", "requires_review": "需要人工复核"}[proposal["status"]]
+                st.write(f"账户净值 {proposal['account_nav']:,.2f} 元 · 计划状态：{label}")
+                for blocker in proposal["blockers"]:
+                    st.error(blocker)
+                for warning in proposal["warnings"]:
+                    st.warning(warning)
+                if proposal["status"] == "reference":
+                    st.info("非月末，仅保留目标参考，不生成买卖指令。")
+                st.dataframe(pd.DataFrame(proposal["orders"]), hide_index=True)
+                st.caption("提案按收盘价估算；次日重新核对资金、交易状态和价格。不会下单或写入交易日志。")
+                st.download_button("下载账户调仓计划", json.dumps(proposal, ensure_ascii=False, indent=2), file_name="rebalance_plan.json")
+            except ValueError as exc:
+                st.error(str(exc))
         upload = st.file_uploader("导入日志 CSV（partial/filled 的数量均为本次增量成交量）", type=["csv"])
         if upload and st.button("导入交易日志"):
             try:

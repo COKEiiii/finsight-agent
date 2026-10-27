@@ -310,3 +310,26 @@ class FinSight:
         pd.DataFrame(payload["executions"]).to_csv(folder / "executions.csv", index=False, encoding="utf-8-sig")
         (folder / "weekly_review.md").write_text(render_weekly_review(payload), encoding="utf-8")
         return payload
+
+    def rebalance(self, screen_run_id: str, capital: float = 100_000, account: str = "paper") -> dict:
+        from finsight.models import fingerprint
+        from finsight.portfolio import journal_entries
+        from finsight.rebalance import ORDER_COLUMNS, rebalance_plan
+        run = self.store.run(screen_run_id)
+        if run["kind"] != "screen":
+            raise ValueError("rebalance must reference an existing screening run")
+        result = ScreeningResult.model_validate(run["payload"])
+        config = StrategyConfig.model_validate(run["config"])
+        bundle = self.store.load_snapshot(result.snapshot_id)
+        journal = journal_entries(self.store, account)
+        report = reconcile(self.store, bundle, capital, account, config=config, entries=journal)
+        payload = rebalance_plan(result, config, bundle, report)
+        events = [entry.model_dump(mode="json") for entry in journal]
+        payload.update(code_version=code_version(), journal_fingerprint=fingerprint(events),
+                       journal_event_ids=[entry["event_id"] for entry in events])
+        run_id = self.store.save_run("rebalance", result.snapshot_id, config, payload)
+        payload["run_id"] = run_id
+        folder = self.store.artifact_dir(run_id)
+        (folder / "rebalance_plan.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        pd.DataFrame(payload["orders"], columns=ORDER_COLUMNS).to_csv(folder / "rebalance_orders.csv", index=False, encoding="utf-8-sig")
+        return payload

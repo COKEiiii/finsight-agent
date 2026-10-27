@@ -67,6 +67,10 @@ def parser() -> argparse.ArgumentParser:
     imp.add_argument("path", type=Path)
     show = journal_cmd.add_parser("export")
     show.add_argument("--account", default="paper")
+    rebalance = journal_cmd.add_parser("plan", help="manual month-end delta orders from recorded account NAV")
+    rebalance.add_argument("--run", required=True, help="published screening run")
+    rebalance.add_argument("--account", default="paper")
+    rebalance.add_argument("--capital", type=float, required=True, help="account starting cash, not current NAV")
     report = journal_cmd.add_parser("report")
     report.add_argument("--account", default="paper")
     report.add_argument("--snapshot")
@@ -183,6 +187,10 @@ def main(argv: list[str] | None = None) -> int:
                 output(import_journal(service.store, args.path.read_text(encoding="utf-8-sig")))
             elif args.journal_command == "export":
                 output([e.model_dump(mode="json") for e in journal_entries(service.store, args.account)])
+            elif args.journal_command == "plan":
+                plan = service.rebalance(args.run, args.capital, args.account)
+                output(plan)
+                return 2 if plan["status"] in {"blocked", "requires_review"} else 0
             else:
                 actual = json.loads(args.actual_holdings.read_text()) if args.actual_holdings else None
                 output(service.portfolio_report(args.snapshot, args.capital, args.account, args.actual_cash, actual))

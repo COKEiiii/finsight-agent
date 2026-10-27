@@ -109,13 +109,15 @@ def journal_entries(store: Store, account_id: str = "paper") -> list[TradeJourna
 
 def reconcile(store: Store, bundle: SnapshotBundle, initial_cash: float, account_id: str = "paper",
               actual_cash: float | None = None, actual_holdings: dict[str, int] | None = None,
-              config: StrategyConfig | None = None) -> dict:
+              config: StrategyConfig | None = None, *, entries: list[TradeJournalEntry] | None = None) -> dict:
     config = config or StrategyConfig()
     if not math.isfinite(initial_cash) or initial_cash <= 0:
         raise ValueError("initial cash must be positive and finite")
     from finsight.backtest import Ledger
     ledger = Ledger(initial_cash)
-    events = journal_entries(store, account_id)
+    events = journal_entries(store, account_id) if entries is None else entries
+    if any(entry.account_id != account_id for entry in events):
+        raise ValueError("journal account does not match reconciliation account")
     flags, execution_rows = [], []
     dates = sorted(set(str(e.trade_date) for e in events if e.trade_date <= bundle.meta.as_of) |
                    set(bundle["actions"]["ex_date"]) | set(bundle["actions"]["pay_date"]))
@@ -177,7 +179,7 @@ def reconcile(store: Store, bundle: SnapshotBundle, initial_cash: float, account
             flags.append(f"{industry}: industry holding count exceeds strategy limit")
     difference = None if actual_holdings is None else {s: actual_holdings.get(s, 0) - holdings.get(s, 0)
         for s in set(actual_holdings) | set(holdings) if actual_holdings.get(s, 0) != holdings.get(s, 0)}
-    performance = journal_performance(store, bundle, initial_cash, account_id)
+    performance = journal_performance(store, bundle, initial_cash, account_id, entries=events)
     return {"account_id": account_id, "as_of": str(bundle.meta.as_of), "initial_cash": initial_cash,
             "synthetic": bundle.meta.synthetic, "research_eligible": bundle.meta.research_eligible, "cash": ledger.cash,
             "receivables": ledger.receivables, "nav": nav, "holdings": holdings, "weights": weights,
@@ -191,9 +193,10 @@ def reconcile(store: Store, bundle: SnapshotBundle, initial_cash: float, account
             "corporate_actions_verified": bundle.meta.research_checks.get("corporate_actions", False)}
 
 
-def journal_performance(store: Store, bundle: SnapshotBundle, initial_cash: float, account_id: str) -> dict:
+def journal_performance(store: Store, bundle: SnapshotBundle, initial_cash: float, account_id: str,
+                        *, entries: list[TradeJournalEntry] | None = None) -> dict:
     from finsight.backtest import Ledger, metrics
-    events = [e for e in journal_entries(store, account_id)
+    events = [e for e in (journal_entries(store, account_id) if entries is None else entries)
               if e.status in {"filled", "partial"} and e.trade_date <= bundle.meta.as_of]
     if not events:
         return {"curve": [], "weekly_return": None, "metrics": None,
