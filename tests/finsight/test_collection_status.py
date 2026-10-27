@@ -141,6 +141,11 @@ def test_morning_bootstrap_reused_after_close_with_fresh_valuation(tmp_path):
     first = service.sync("akshare", date(2025, 5, 30), date(2024, 1, 2), symbols=["600036"],
                          api=api, clock=lambda: morning, interval=0, retries=0)
     assert not first["publishable"]
+    before = len(Jobs(service.store).list())
+    with pytest.raises(ValueError, match="不能回填"):
+        service.sync("akshare", date(2025, 5, 30), symbols=["600036"],
+                     api=api, clock=lambda: morning, interval=0, retries=0)
+    assert len(Jobs(service.store).list()) == before and api.valuation_calls == 1
     api.price_ranges.clear()
     api.available_day = "2025-06-02"
     evening = morning.replace(hour=18, minute=15)

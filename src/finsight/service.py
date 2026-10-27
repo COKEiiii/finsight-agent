@@ -53,6 +53,18 @@ class FinSight:
             from finsight.data.seeds import select_seeds
             now = clock() if clock else datetime.now(ZoneInfo("Asia/Shanghai"))
             cutoff = now.date() if now.hour >= 18 else now.date() - timedelta(days=1)
+            if previous and previous.job_id and start is None and any(
+                "no stock state known at cutoff" in issue for issue in previous.quality_issues
+            ):
+                calendar = self.store.load_snapshot(previous.snapshot_id, table_names=("calendar",))["calendar"]
+                requested = str(min(as_of or cutoff, cutoff))
+                known_sessions = calendar.loc[calendar["trade_date"] <= requested, "trade_date"]
+                if (not known_sessions.empty and requested <= calendar["trade_date"].max() and
+                        known_sessions.max() <= str(previous.as_of)):
+                    prior_job = jobs.get(previous.job_id)
+                    if prior_job["progress"].get("phase") == "done" and not prior_job["requests"]["failed"]:
+                        from finsight.collection_status import recovery_status
+                        raise ValueError(recovery_status(self.store, prior_job)["message"])
             seeds = select_seeds(self.store, uid, min(as_of or cutoff, cutoff), now) if previous is None else []
             config = {"as_of": str(as_of) if as_of else None, "start": str(start) if start else None,
                 "symbols": symbols, "mainboard": mainboard, "limit": limit,

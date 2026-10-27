@@ -110,6 +110,12 @@ def check_daily(service: FinSight, universe: str, now: datetime | None = None) -
     if any(s.as_of == day and s.publishable for s in saved):
         return {"status": "up_to_date", "as_of": str(day)}
     failed = next((s for s in saved if s.as_of == day), None)
+    if failed and any("no stock state known at cutoff" in issue for issue in failed.quality_issues):
+        future = calendar.loc[(calendar["trade_date"] > str(day)) &
+                              (calendar["trade_date"] >= str(failed.captured_at.date())), "trade_date"]
+        return {"status": "waiting_new_session", "as_of": str(day),
+                "next_session": future.min() if not future.empty else None,
+                "note": "首次股票状态晚于截止日期，已有数据保留在本地；等待新交易日收盘后增量更新。"}
     if failed and (now - failed.captured_at).total_seconds() < 3600:
         return {"status": "waiting_retry", "as_of": str(day), "note": "last failed batch is retained; retry cooldown is one hour"}
     with service.store.connect() as db:

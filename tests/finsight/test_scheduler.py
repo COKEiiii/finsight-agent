@@ -48,6 +48,28 @@ def test_stale_exchange_calendar_is_an_error(monkeypatch):
         check_daily(Service(), "sample", datetime(2025, 6, 2, 18, tzinfo=ZoneInfo("Asia/Shanghai")))
 
 
+def test_scheduler_waits_for_new_session_after_temporally_blocked_bootstrap(monkeypatch):
+    class Provider:
+        def __init__(self, root):
+            pass
+        def calendar(self):
+            return pd.DataFrame({"trade_date": ["2025-05-30", "2025-06-02", "2025-06-03"]})
+    class Store:
+        root = "unused"
+        def snapshots(self):
+            return [MarketSnapshot(snapshot_id="blocked", as_of=date(2025, 5, 30),
+                captured_at=datetime(2025, 6, 2, 9, tzinfo=ZoneInfo("Asia/Shanghai")), source="akshare",
+                universe_id=universe_id(True), universe_scope="current mainboard", publishable=False,
+                quality_issues=["no stock state known at cutoff; first capture cannot be backdated to the prior session"])]
+    class Service:
+        store = Store()
+        def sync(self, *args, **kwargs):
+            pytest.fail("waiting for the close must not restart initialization")
+    monkeypatch.setattr("finsight.data.akshare_provider.AKShareProvider", Provider)
+    result = check_daily(Service(), "mainboard", datetime(2025, 6, 2, 14, tzinfo=ZoneInfo("Asia/Shanghai")))
+    assert result["status"] == "waiting_new_session" and result["next_session"] == "2025-06-02"
+
+
 def test_job_only_collects_market_data(tmp_path):
     job = job_definition(tmp_path, python="/test/venv/bin/python")
     assert job["StartCalendarInterval"] == {"Hour": 18, "Minute": 5}
