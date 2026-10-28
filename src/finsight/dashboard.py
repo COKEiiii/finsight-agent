@@ -18,7 +18,7 @@ from finsight.data.quality import audit
 from finsight.jobs import Jobs
 from finsight.models import ScreeningResult, StrategyConfig, TradeJournalEntry
 from finsight.portfolio import import_journal, journal_entries, portfolio_plan
-from finsight.research import ChatAdapter, render_card
+from finsight.research import FIELD_PROMPT_VERSION, ChatAdapter, render_card
 from finsight.service import FinSight
 
 
@@ -260,12 +260,17 @@ def main():
             usage = service.research_usage("deepseek", model)
             st.caption(f"本项目该模型已记录：输入 {usage['input_tokens']:,} + 输出 {usage['output_tokens']:,} = {usage['reported_tokens']:,} tokens；缓存复用 {usage['cache_hits']} 次。")
             st.caption("此计数包含失败研究记录返回的用量；不包含连接测试及其他应用，不能作为平台剩余额度。")
+            experiments = sum(row.get("experimental_card_records", 0) for row in usage["by_model"])
+            if experiments:
+                st.caption(f"其中包含 {experiments} 张小规模测试卡的用量；测试卡不作为正式候选研究报告。")
         research_runs = [r for r in service.store.runs("research") if selected and
                          json.loads(r["payload"]).get("screen_run_id") == selected.run_id]
         if research_runs:
             record = json.loads(research_runs[0]["payload"])
             from finsight.models import ResearchCard
             cards = [ResearchCard.model_validate(c) for c in record["cards"]]
+            if any(card.status != "demo" and card.prompt_version != FIELD_PROMPT_VERSION for card in cards):
+                st.info("这些卡片保留旧版生成状态；重新生成时会使用当前的风险完整性检查，并计入模型请求预算。")
             for card in cards:
                 with st.expander(f"{card.symbol} · {card.model} · {card.status}", expanded=len(cards) == 1):
                     st.markdown(render_card(card))

@@ -28,7 +28,7 @@ def _now():
 
 def _engine_id():
     root = Path(__file__).parent
-    names = ("evaluation.py", "evaluation_jobs.py", "research.py", "research_facts.py", "models.py")
+    names = ("evaluation.py", "evaluation_jobs.py", "research.py", "research_facts.py", "research_requirements.py", "models.py")
     return hashlib.sha256(b"".join(name.encode() + (root / name).read_bytes() for name in names)).hexdigest()
 
 

@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import re
-from datetime import date
 
 from finsight.models import ResearchContent, ScreeningResult
+from finsight.research_requirements import assisted_information_gaps, hypothetical
 
 FIELD_GROUPS = {
     "selection": ("rank", "score", "industry"),
@@ -90,14 +90,6 @@ def compatible_unit(expected: str, suffix: str) -> bool:
         return True
     return (suffix == "元" and expected.startswith("元/")) or (expected, suffix) in {
         ("元/股", "元每股"), ("元/日", "元每天")}
-
-
-def hypothetical(text: str, match: re.Match) -> bool:
-    prefix = re.split(r"[。；;，,]", text[:match.start()])[-1]
-    if re.search(r"目前|当前|已经|已出现|现有|实际", prefix):
-        return False
-    return bool(re.search(r"若|如果|未来|可能|能否|假如|需警惕|需防范", prefix) or
-                re.match(r"(?:的)?(?:风险|可能性)", text[match.end():]))
 
 
 def check_financial_direction(text: str, facts: dict[str, dict], evidence_ids: list[str]):
@@ -259,20 +251,7 @@ def render_content(template: ResearchContent, facts: dict[str, dict]) -> Researc
     if "本卡采用模板辅助修正" in template.summary:
         # Field presence is known by the program; a model must not invent missing
         # dates while the original dates remain visible in the evidence table.
-        gaps = ["未接入新闻或公告正文，无法判断最新事件。", "缺少行业比较基准，无法判断估值是否合理。"]
-        for key, label in (("financials.roe", "ROE"), ("financials.revenue_growth", "营收增长"),
-                           ("financials.report_period", "年报报告期")):
-            if key not in facts:
-                gaps.append(f"未提供{label}，无法判断该指标。")
-        if "financials.report_period" in facts and "market.trade_date" in facts:
-            try:
-                age = (date.fromisoformat(facts["market.trade_date"]["value"]) -
-                       date.fromisoformat(facts["financials.report_period"]["value"])).days
-                if age > 550:
-                    gaps.append("年报数据陈旧，无法判断最新财务表现。")
-            except (ValueError, TypeError):
-                gaps.append("报告期或交易日期格式无效，无法判断年报时效性。")
-        value["information_gaps"] = gaps
+        value["information_gaps"] = assisted_information_gaps(facts)
     value["summary"] = replace(value["summary"])
     for section in ("reasons", "risks"):
         for item in value[section]:

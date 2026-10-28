@@ -102,3 +102,15 @@ def test_usage_counts_failures_but_not_cached_generation_twice(tmp_path, capsys)
     assert main(["--data-dir", str(tmp_path), "usage", "--model", "deepseek-fixture"]) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["reported_tokens"] == 20 and output["cache_hits"] == 1
+
+
+def test_api_experiments_are_in_usage_but_not_normal_research_records(tmp_path):
+    from finsight.models import ResearchCard, StrategyConfig
+    service = FinSight(tmp_path)
+    card = ResearchCard(run_id="evaluation-only", symbol="600000.SH", model="fixture-api",
+        prompt_version="fixture", status="failed", llm_calls=1, input_tokens=11, output_tokens=7)
+    service.store.save_run("research_experiment", "evaluation-only", StrategyConfig(),
+        {"provider": "deepseek", "evaluation_only": True, "cards": [card.model_dump(mode="json")]})
+    usage = service.research_usage("deepseek")
+    assert usage["reported_tokens"] == 18 and usage["by_model"][0]["experimental_card_records"] == 1
+    assert service.store.runs("research") == []

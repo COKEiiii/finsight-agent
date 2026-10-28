@@ -19,9 +19,15 @@ from finsight.research_facts import (
     format_fact_value,
     render_content,
 )
+from finsight.research_requirements import (
+    assisted_information_gaps,
+    check_required_coverage,
+    number,
+    required_coverage,
+)
 
 PROMPT_VERSION = "research_v0.2"
-FIELD_PROMPT_VERSION = "research_v0.16_supported_repair"
+FIELD_PROMPT_VERSION = "research_v0.17_critical_coverage"
 SCOPE_SUMMARY = "仅依据当前快照的行情、年度财务及估值数据；未接入新闻或公告正文。"
 ASSISTED_SUMMARY = SCOPE_SUMMARY + "本卡采用模板辅助修正：模型选择要点，程序提供事实措辞。"
 FIELD_PROMPT = """你的任务只生成定性解释和风险，所有数值、单位、日期和排名已由程序在证据表中展示。
@@ -34,6 +40,9 @@ summary 只说明分析范围，information_gaps 和 human_checks 只写定性�
 没有行业比较依据时，估值是否合理或被低估必须写“无法判断”。收盘价本身不能证明股价处于高位或低位。
 营收增长方向必须与字段符号一致；未来风险须明确用“未来若”等条件句，不得写成已发生的事实。
 报告期背景无需单独引用日期；缺失关键字段须说无法判断，年报陈旧或营收负增长须在风险中引用相关字段。
+required_disclosures 列出本次必须披露的缺口与风险。缺失财务字段在 information_gaps 明确写“未提供该指标，无法判断”。
+已经发生的营收负增长必须写入 risks 并引用 financials.revenue_growth；放在 reasons 或仅写未来假设不算完成。
+陈旧年报必须写入 risks 并引用 financials.report_period。其余财务、趋势与估值分析仍按证据说明。
 仅输出完整 JSON，不写 Markdown、注释或 JSON 后的解释。
 """
 SYSTEM_PROMPT = """你是 FinSight A 股研究助手。只使用用户提供的当前运行快照证据。
@@ -78,12 +87,17 @@ def assisted_repair_schema(evidence: dict) -> tuple[dict, list[dict]]:
         "valuation.pb": "市净率为{{valuation.pb}}，缺少比较依据，无法判断估值是否合理。",
     }
     growth = evidence.get("financials.revenue_growth", {}).get("value")
-    if isinstance(growth, (int, float)) and growth < 0:
+    needs = required_coverage(evidence)
+    if number(growth) and growth < 0:
         templates["financials.revenue_growth"] += "当前营收为负增长，需核实业务变化。"
-    choices = [{"text": text, "evidence_ids": [key]} for key, text in templates.items() if key in evidence]
+    if needs["annual_report_stale"]:
+        templates["financials.report_period"] = "年报报告期为{{financials.report_period}}，数据陈旧，无法判断最新财务表现。"
+    choices = [{"text": text, "evidence_ids": [key]} for key, text in templates.items() if key in evidence and
+               (key == "financials.report_period" or number(evidence[key].get("value")))]
     schema = content_schema(list(evidence), typed=True)
     schema["properties"]["summary"]["enum"] = [ASSISTED_SUMMARY]
     schema["properties"]["summary"]["maxLength"] = 240
+    schema["properties"]["risks"]["minItems"] = max(1, len(needs["required_risk_fields"]))
     schema["$defs"]["EvidenceClaim"] = {"oneOf": [
         {"type": "object", "properties": {"text": {"type": "string", "enum": [choice["text"]]},
          "evidence_ids": {"type": "array", "items": {"type": "string", "enum": choice["evidence_ids"]},
@@ -246,6 +260,22 @@ def validate_content(value: dict, evidence: dict) -> ResearchContent:
     return content
 
 
+def finalize_content(value: dict, evidence: dict, as_of: date | None = None) -> ResearchContent:
+    """Validate model wording, render proven facts, then enforce required coverage."""
+    template = validate_content(value, evidence)
+    typed = evidence and all(isinstance(item, dict) and "field" in item for item in evidence.values())
+    if not typed:
+        return template
+    if "模板辅助修正" in template.summary:
+        _, choices = assisted_repair_schema(evidence)
+        if template.summary != ASSISTED_SUMMARY or any(
+                claim.model_dump() not in choices for claim in template.reasons + template.risks):
+            raise ValueError("assisted repair must use the declared grounded text/citation pairs")
+    content = render_content(template, evidence)
+    check_required_coverage(content, evidence, as_of)
+    return content
+
+
 def parse_json_content(text: str) -> dict:
     text = text.strip()
     # Remove only a single Markdown wrapper; do not repair financial content.
@@ -258,7 +288,7 @@ def parse_json_content(text: str) -> dict:
 
 def demo_content(candidate: dict, evidence: dict | None = None) -> ResearchContent:
     if evidence and "selection.rank" in evidence:
-        return ResearchContent.model_validate({
+        value = {
             "summary": "离线模板演示：仅依据当前快照的行情、年报指标与估值字段；未调用模型。",
             "reasons": [
                 {"text": "该股票进入固定规则的候选名单，具体名次由程序展示。", "evidence_ids": ["selection.rank"]},
@@ -268,7 +298,21 @@ def demo_content(candidate: dict, evidence: dict | None = None) -> ResearchConte
             "risks": [{"text": "营收增长与股价趋势不能保证未来表现。", "evidence_ids": ["financials.revenue_growth", "market.momentum_60"]}],
             "information_gaps": ["未接新闻或公告正文，无法判断最新事件和利润质量。"],
             "human_checks": ["核对年报公告日期、交易状态和行业暴露。"],
-        })
+        }
+        needs = required_coverage(evidence)
+        available_financials = [key for key in ("financials.roe", "financials.revenue_growth") if key not in needs["missing_financial_fields"]]
+        if available_financials:
+            value["reasons"][1] = {"text": "已提供的财务指标参与财务质量评分。", "evidence_ids": available_financials}
+        else:
+            value["reasons"].pop(1)
+        value["information_gaps"] = assisted_information_gaps(evidence)
+        if "financials.revenue_growth" in needs["missing_financial_fields"]:
+            value["risks"][0] = {"text": "股价趋势不能保证未来表现。", "evidence_ids": ["market.momentum_60"]}
+        if needs["negative_revenue_growth"]:
+            value["risks"].append({"text": "当前营收出现负增长，需核实原因及持续性。", "evidence_ids": ["financials.revenue_growth"]})
+        if needs["annual_report_stale"]:
+            value["risks"].append({"text": "年报数据陈旧，无法判断最新财务表现。", "evidence_ids": ["financials.report_period"]})
+        return ResearchContent.model_validate(value)
     return ResearchContent.model_validate({
         "summary": "离线模板演示：仅解释现有行情、年报指标及估值，未调用任何模型。",
         "reasons": [{"text": "该候选股通过固定股票池过滤，并依据六因子加权排名进入候选表。", "evidence_ids": ["selection"]},
@@ -306,9 +350,7 @@ def research_candidate(result: ScreeningResult, candidate: dict, store: Store,
     if cached:
         try:
             # Recheck stored prose under current rules before presenting a cache hit.
-            template = validate_content(cached.get("content_template") or cached["content"], evidence)
-            if typed and cached.get("content_template"):
-                cached["content"] = render_content(template, evidence).model_dump(mode="json")
+            cached["content"] = finalize_content(cached.get("content_template") or cached["content"], evidence, result.as_of).model_dump(mode="json")
         except (ValueError, TypeError, KeyError):
             cached = None
     if cached:
@@ -319,20 +361,22 @@ def research_candidate(result: ScreeningResult, candidate: dict, store: Store,
                         prompt_version=prompt_version, status="demo" if demo else "failed", evidence=evidence,
                         facts=evidence if typed else {})
     if demo:
-        card.content = demo_content(candidate, evidence)
+        template = demo_content(candidate, evidence)
+        card.content = finalize_content(template.model_dump(), evidence, result.as_of)
+        card.content_template = template if typed else None
         card.elapsed_seconds = time.perf_counter() - started
         store.cache(key, card.model_dump(mode="json"))
         return card
     if isinstance(adapter, ChatAdapter):
         adapter.final_schema = schema
+    needs = required_coverage(evidence, result.as_of) if typed else {}
+    growth = candidate.get("revenue_growth")
     context = ({"symbol": candidate["symbol"], "name": candidate["name"], "as_of": str(result.as_of),
                 "snapshot_id": result.snapshot_id, "strategy_version": result.strategy_version,
                 "scope": "行情、年报和估值；未接新闻或公告正文",
-                "observed_growth_direction": ("positive" if candidate.get("revenue_growth", 0) > 0 else
-                    "negative" if candidate.get("revenue_growth", 0) < 0 else "zero") if "revenue_growth" in candidate else "unknown",
+                "observed_growth_direction": ("positive" if growth > 0 else "negative" if growth < 0 else "zero") if number(growth) else "unknown",
                 "price_level_comparison": "unavailable; no historical price-level or peer benchmark was supplied",
-                "annual_report_stale": (result.as_of - date.fromisoformat(candidate["report_period"])).days > 550
-                    if candidate.get("report_period") else None} if typed else candidate)
+                "annual_report_stale": needs["annual_report_stale"], "required_disclosures": needs} if typed else candidate)
     model_evidence = explanation_evidence(evidence) if typed else evidence
     messages = [{"role": "system", "content": prompt}, {"role": "user", "content": json.dumps({
         "candidate": context, "evidence": model_evidence, "json_schema": schema,
@@ -349,6 +393,8 @@ def research_candidate(result: ScreeningResult, candidate: dict, store: Store,
             messages = messages[:2] + [{"role": "user", "content": json.dumps({
                 "instruction": "本轮使用模板辅助修正。reasons 和 risks 只能从 allowed_claims 选择，原样保留 text 与 evidence_ids 配对；summary 必须声明模板辅助修正。其余字段保持定性。",
                 "allowed_claims": assisted_choices, "summary": ASSISTED_SUMMARY,
+                "mandatory_risks": [claim for claim in assisted_choices if claim["evidence_ids"][0] in needs["required_risk_fields"]],
+                "risk_instruction": "risks 必须包含 mandatory_risks 每一项，不能只放在 reasons；其余风险仍可选择。缺口由实际字段推导。",
                 "json_schema": repair_schema}, ensure_ascii=False)}]
         message = None
         try:
@@ -384,12 +430,12 @@ def research_candidate(result: ScreeningResult, candidate: dict, store: Store,
             value = parse_json_content(message.get("content") or "")
             if typed:
                 card.content_template = ResearchContent.model_validate(value)
-            parsed = validate_content(value, evidence)
+            completed_content = finalize_content(value, evidence, result.as_of)
             if assisted_choices is not None:
                 if value.get("summary") != ASSISTED_SUMMARY or any(
                     claim not in assisted_choices for section in ("reasons", "risks") for claim in value.get(section, [])):
                     raise ValueError("assisted repair must use the declared grounded text/citation pairs")
-            card.content = render_content(parsed, evidence) if typed else parsed
+            card.content = completed_content
             card.status = "completed"
             card.elapsed_seconds = time.perf_counter() - started
             store.cache(key, card.model_dump(mode="json"))
@@ -423,6 +469,8 @@ def research_candidate(result: ScreeningResult, candidate: dict, store: Store,
 
 
 def research_error_message(error: str) -> str:
+    if any(message in error for message in ("observed negative revenue growth missing", "stale annual report warning missing", "missing financials.")):
+        return "模型遗漏了已知财务风险或关键数据缺口，本卡未通过完整性检查。"
     if any(message in error for message in ("moving-average", "dimensionless ratio", "compares two averages")):
         return "模型混淆了均线比值、均线方向或股价位置，本卡未通过事实校验。"
     if "growth direction contradicts" in error or "zero revenue growth" in error:

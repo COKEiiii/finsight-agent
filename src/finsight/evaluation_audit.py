@@ -13,10 +13,10 @@ import pandas as pd
 from finsight.data.store import Store, code_version
 from finsight.evaluation_jobs import _engine_id, _load
 from finsight.models import ResearchCard, ScreeningResult, StrategyConfig, fingerprint
-from finsight.research import ASSISTED_SUMMARY, assisted_repair_schema, validate_content
-from finsight.research_facts import facts_for, hypothetical, render_content
+from finsight.research import finalize_content
+from finsight.research_facts import facts_for, hypothetical
 
-RUBRIC_VERSION = "offline_review_v0.1"
+RUBRIC_VERSION = "offline_review_v0.2_required_coverage"
 
 
 def scenario_check(scenario, content, facts):
@@ -75,13 +75,8 @@ def audit_suite(store: Store, suite_id: str) -> dict:
                             raise ValueError(f"saved fact does not match frozen case: {field}")
                 if card.content_template is None:
                     raise ValueError("original model template unavailable; do not invent a replacement")
-                template = validate_content(card.content_template.model_dump(), facts)
-                assisted = "模板辅助修正" in template.summary
-                if assisted:
-                    _, choices = assisted_repair_schema(facts)
-                    if template.summary != ASSISTED_SUMMARY or any(claim.model_dump() not in choices for claim in template.reasons + template.risks):
-                        raise ValueError("saved assisted response does not use the declared text/citation pairs")
-                rendered = render_content(template, facts)
+                rendered = finalize_content(card.content_template.model_dump(), facts, result.as_of)
+                assisted = "模板辅助修正" in rendered.summary
                 row.update(saved_response_valid_now=True, scenario_passed_now=bool(scenario_check(case["scenario"], rendered, facts)),
                     recoverable_saved_response=original["status"] == "failed", mode_if_valid="assisted" if assisted else "freeform")
                 if not row["scenario_passed_now"]:

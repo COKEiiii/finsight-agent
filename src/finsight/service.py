@@ -267,7 +267,8 @@ class FinSight:
 
     def research_usage(self, provider: str = "deepseek", model: str | None = None) -> dict:
         groups = {}
-        for row in self.store.runs("research"):
+        records = self.store.runs("research") + self.store.runs("research_experiment")
+        for row in records:
             payload = json.loads(row["payload"])
             if provider != "all" and payload.get("provider") != provider:
                 continue
@@ -277,8 +278,10 @@ class FinSight:
                 key = (payload.get("provider", "unknown"), card["model"])
                 group = groups.setdefault(key, {"provider": key[0], "model": key[1], "card_records": 0,
                     "llm_calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_hits": 0,
-                    "failed_cards": 0, "fresh_completed_cards": 0, "fresh_assisted_cards": 0})
+                    "failed_cards": 0, "fresh_completed_cards": 0, "fresh_assisted_cards": 0,
+                    "experimental_card_records": 0})
                 group["card_records"] += 1
+                group["experimental_card_records"] += row["kind"] == "research_experiment"
                 for field in ("llm_calls", "input_tokens", "output_tokens"):
                     group[field] += card.get(field, 0)
                 group["cache_hits"] += bool(card.get("cache_hit"))
@@ -291,7 +294,7 @@ class FinSight:
         totals = {field: sum(row[field] for row in rows) for field in fields}
         return {"provider": provider, "model": model, **totals,
                 "reported_tokens": totals["input_tokens"] + totals["output_tokens"], "by_model": rows,
-                "scope": "本项目已保存的研究记录；缓存原始生成用量不重复计入。",
+                "scope": "本项目已保存的研究和小规模 API 实验记录；实验卡单列，缓存原始生成用量不重复计入。",
                 "limitations": "不包含连接测试、平台其他应用调用或未返回 usage 的请求；不是平台剩余额度。"}
 
     def portfolio_report(self, snapshot_id: str | None = None, capital: float = 100_000,
