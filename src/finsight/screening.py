@@ -16,6 +16,23 @@ def compute_factors(bundle: SnapshotBundle, as_of: date, config: StrategyConfig)
     return evaluate(bundle, as_of, config)
 
 
+def rank_factors(frame: pd.DataFrame, config: StrategyConfig, baseline: bool = False) -> pd.DataFrame:
+    """Score the entire eligible pool before truncation, shared with diagnostics."""
+    frame = frame.copy()
+    if frame.empty:
+        return frame
+    frame['score'] = 0.0
+    for factor in FACTORS:
+        frame[f'{factor}_score'] = frame[factor].rank(method='average', pct=True,
+            ascending=factor not in {'pe_ttm', 'pb'}) * 100
+        frame['score'] += config.weights[factor] * frame[f'{factor}_score']
+    if baseline:
+        frame['score'] = frame['momentum_60_score']
+    frame = frame.sort_values(['score', 'symbol'], ascending=[False, True])
+    frame['rank'] = range(1, len(frame) + 1)
+    return frame
+
+
 def screen(bundle: SnapshotBundle, config: StrategyConfig | None = None, as_of: date | None = None,
            baseline: bool = False, run_id: str | None = None, preview: bool = False,
            store: Store | None = None) -> ScreeningResult:
@@ -59,15 +76,7 @@ def screen(bundle: SnapshotBundle, config: StrategyConfig | None = None, as_of: 
                           for row in frame.to_dict('records')]
             rows, hits = store.factor_rows(keyed_rows)
             frame = pd.DataFrame(rows)
-        frame['score'] = 0.0
-        for factor in FACTORS:
-            frame[f'{factor}_score'] = frame[factor].rank(method='average', pct=True,
-                ascending=factor not in {'pe_ttm', 'pb'}) * 100
-            frame['score'] += config.weights[factor] * frame[f'{factor}_score']
-        if baseline:
-            frame['score'] = frame['momentum_60_score']
-        frame = frame.sort_values(['score', 'symbol'], ascending=[False, True]).head(config.top_n)
-        frame['rank'] = range(1, len(frame) + 1)
+        frame = rank_factors(frame, config, baseline).head(config.top_n)
     return ScreeningResult(
         run_id=run_id or uuid4().hex, snapshot_id=bundle.meta.snapshot_id, as_of=as_of,
         strategy_version=config.version, config_id=config.config_id, code_version=engine_version,

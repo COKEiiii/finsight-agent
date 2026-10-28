@@ -238,6 +238,40 @@ def main():
                                file_name="screening.json", mime="application/json")
             with st.expander(f"剔除原因（{len(selected.exclusions)} 只）"):
                 st.dataframe(pd.DataFrame(selected.exclusions), hide_index=True, width="stretch")
+            with st.expander("选股诊断：分数贡献、因子相关性与行业集中度"):
+                st.caption("解释当前排名结构，首版策略保持冻结；此处不调用模型。")
+                if st.button("生成选股诊断"):
+                    try:
+                        service.diagnose(selected.run_id)
+                    except ValueError as exc:
+                        st.error(str(exc))
+                diagnostics = [json.loads(r["payload"]) for r in service.store.runs("diagnostics")
+                    if json.loads(r["payload"]).get("screen_run_id") == selected.run_id]
+                if diagnostics:
+                    from finsight.diagnostics import FACTOR_LABELS
+                    diagnosis = diagnostics[0]
+                    st.caption(f"选股记录：{diagnosis['screen_run_id']} · 合格股票 {diagnosis['eligible_count']} · 日期 {diagnosis['as_of']}")
+                    contributions = pd.DataFrame(diagnosis["factor_contributions"])
+                    if not contributions.empty:
+                        contribution_labels = {factor + "_contribution": label for factor, label in FACTOR_LABELS.items()}
+                        st.write("候选股的加权分数贡献（分）")
+                        st.bar_chart(contributions.set_index("symbol")[list(contribution_labels)].rename(columns=contribution_labels))
+                    st.write("合格股票池的因子百分位相关性；估值已按低值高分处理。")
+                    correlation = pd.DataFrame(diagnosis["factor_rank_correlation"]).set_index("factor")
+                    st.dataframe(correlation.rename(index=FACTOR_LABELS, columns=FACTOR_LABELS), width="stretch")
+                    if diagnosis["high_correlation_pairs"]:
+                        st.caption("相关性绝对值 ≥ 0.8：" + "；".join(
+                            f"{FACTOR_LABELS[row['factor_a']]} / {FACTOR_LABELS[row['factor_b']]} {row['correlation']:.3f}"
+                            for row in diagnosis["high_correlation_pairs"]))
+                    st.write("行业分布与目标参考（非实际持仓）")
+                    industry_labels = {"industry": "行业", "eligible_names": "合格股票数", "eligible_share": "合格股票占比",
+                        "candidate_names": "候选数", "candidate_share": "候选占比", "target_names": "目标参考只数",
+                        "reference_target_weight": "目标参考仓位"}
+                    st.dataframe(pd.DataFrame(diagnosis["industry_exposure"]).rename(columns=industry_labels), hide_index=True, width="stretch")
+                    st.caption(f"目标参考现金 {diagnosis['reference_target_cash_weight']:.0%}；未计算账户实际持仓、费用或成交。")
+                    for note in diagnosis["limitations"]:
+                        st.caption(note)
+                    st.download_button("下载选股诊断 JSON", json.dumps(diagnosis, ensure_ascii=False, indent=2), file_name="diagnostics.json")
         else:
             st.info("运行选股后，在此查看候选股与各因子得分。")
     with research_tab:

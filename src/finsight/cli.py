@@ -43,6 +43,8 @@ def parser() -> argparse.ArgumentParser:
     screen.add_argument("--as-of", type=date.fromisoformat)
     screen.add_argument("--capital", type=float, default=100_000)
     screen.add_argument("--preview", action="store_true", help="explicitly allow an unpublished research preview")
+    diagnose = commands.add_parser("diagnose", help="explain frozen scores, factor correlation and industry exposure; no model calls")
+    diagnose.add_argument("--run", required=True, help="screening run to diagnose")
     research = commands.add_parser("research", help="generate research cards; default: local Ollama")
     research.add_argument("--run", required=True)
     research.add_argument("--provider", choices=["ollama", "deepseek", "demo"], default=os.getenv("FINSIGHT_PROVIDER", "ollama"))
@@ -167,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
             output({"run_id": result.run_id, "eligible_count": result.eligible_count,
                     "publication_status": result.publication_status, "coverage": result.coverage,
                     "candidates": result.candidates, "exports": str(service.store.artifact_dir(result.run_id))})
+        elif args.command == "diagnose":
+            output(service.diagnose(args.run))
         elif args.command == "research":
             cards = service.research(args.run, args.provider, args.model, args.limit)
             output([c.model_dump(mode="json") for c in cards])

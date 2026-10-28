@@ -220,6 +220,10 @@ class FinSight:
             pd.DataFrame(report["methods"]).to_csv(folder / "requests.csv", index=False, encoding="utf-8-sig")
         return report
 
+    def diagnose(self, run_id: str) -> dict:
+        from finsight.diagnostics import diagnose_run
+        return diagnose_run(self.store, run_id)
+
     def research(self, run_id: str, provider: str = "ollama", model: str | None = None,
                  limit: int = 10, adapter=None) -> list[ResearchCard]:
         if limit < 1 or limit > 100:
