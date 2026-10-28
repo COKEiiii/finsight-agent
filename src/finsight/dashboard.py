@@ -20,6 +20,7 @@ from finsight.jobs import Jobs
 from finsight.models import ScreeningResult, StrategyConfig, TradeJournalEntry
 from finsight.portfolio import import_journal, journal_entries, portfolio_plan
 from finsight.research import FIELD_PROMPT_VERSION, ChatAdapter, render_card
+from finsight.research_history import report_group
 from finsight.service import FinSight
 
 
@@ -291,6 +292,8 @@ def main():
                 st.error(f"{failed} 张研究卡未成功生成，选股结果已保留。")
             else:
                 st.success("研究卡已保存")
+            if cards:
+                st.session_state[f"report_group_{selected.run_id}"] = report_group(provider, cards[0].model, cards[0].prompt_version)
         if provider == "deepseek":
             usage = service.research_usage("deepseek", model)
             st.caption(f"本项目该模型已记录：输入 {usage['input_tokens']:,} + 输出 {usage['output_tokens']:,} = {usage['reported_tokens']:,} tokens；缓存复用 {usage['cache_hits']} 次。")
@@ -298,15 +301,23 @@ def main():
             experiments = sum(row.get("experimental_card_records", 0) for row in usage["by_model"])
             if experiments:
                 st.caption(f"其中包含 {experiments} 张小规模测试卡的用量；测试卡不作为正式候选研究报告。")
-        research_runs = [r for r in service.store.runs("research") if selected and
-                         json.loads(r["payload"]).get("screen_run_id") == selected.run_id]
-        if research_runs:
-            record = json.loads(research_runs[0]["payload"])
+        history = service.saved_research(selected.run_id) if selected else {"groups": [], "rejected": []}
+        if history["rejected"]:
+            st.warning(f"{len(history['rejected'])} 条研究记录的结构或绑定不匹配，未自动展示。")
+            with st.expander("未展示记录的原因"):
+                st.json(history["rejected"])
+        if history["groups"]:
+            by_group = {group["group_id"]: group for group in history["groups"]}
+            chosen_group = st.selectbox("查看已保存报告", list(by_group), key=f"report_group_{selected.run_id}",
+                format_func=lambda identifier: f"{by_group[identifier]['provider']} · {by_group[identifier]['model']} · {by_group[identifier]['prompt_version']}")
+            saved = by_group[chosen_group]
+            st.caption(f"已保存 {saved['saved_symbols']}/{saved['candidate_count']} 只；同一模型和提示词版本的分批结果合并展示，按候选排名排序。")
+            st.caption("下方为所选的已保存报告；上方模型选项用于下一次生成。刷新不会调用模型。")
             from finsight.models import ResearchCard
-            cards = [ResearchCard.model_validate(c) for c in record["cards"]]
+            cards = [ResearchCard.model_validate(row["card"]) for row in saved["cards"]]
             if any(card.status != "demo" and card.prompt_version != FIELD_PROMPT_VERSION for card in cards):
                 st.info("这些卡片保留旧版生成状态；重新生成时会使用当前的风险完整性检查，并计入模型请求预算。")
-            for card in cards:
+            for card, entry in zip(cards, saved["cards"]):
                 with st.expander(f"{card.symbol} · {card.model} · {card.status}", expanded=len(cards) == 1):
                     st.markdown(render_card(card))
                     if card.error:
@@ -314,9 +325,14 @@ def main():
                             st.code(card.error, language=None)
                     st.caption(f"模型请求 {card.llm_calls} · 工具执行 {card.tool_calls} · 缓存 {'命中' if card.cache_hit else '未命中'}")
                     st.caption(f"本次记录 tokens：输入 {card.input_tokens:,} · 输出 {card.output_tokens:,}")
+                    st.caption(f"保存批次：{entry['research_run_id']} · 保存时间（UTC）：{entry['created_at']}")
+                    if entry["previous_completed"]:
+                        with st.expander("上一次成功卡（历史，最新生成仍为失败）"):
+                            st.markdown(render_card(ResearchCard.model_validate(entry["previous_completed"]["card"])))
             st.download_button("下载研究报告 Markdown", "\n\n---\n\n".join(render_card(c) for c in cards), file_name="research.md")
+            st.download_button("下载报告及批次记录 JSON", json.dumps(saved, ensure_ascii=False, indent=2), file_name="research-history.json")
         else:
-            st.info("先运行选股，再选择本地模型或离线模板生成报告。")
+            st.info("当前榜单尚无已保存研究卡，选择模型后按需生成。" if selected else "先运行选股，再选择模型生成报告。")
         with st.expander("研究卡人工验收"):
             suites = completed_suites(service.store)
             if not suites:

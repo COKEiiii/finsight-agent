@@ -326,7 +326,13 @@ class Store:
     def cached(self, key: str) -> dict | None:
         with self.connect() as db:
             row = db.execute("SELECT payload FROM research_cache WHERE cache_key=?", (key,)).fetchone()
-        return json.loads(row["payload"]) if row else None
+        if row:
+            try:
+                payload = json.loads(row["payload"])
+                return payload if isinstance(payload, dict) else None
+            except (ValueError, TypeError):
+                pass
+        return None
 
     def cache(self, key: str, value: dict[str, Any]):
         with self.connect() as db:

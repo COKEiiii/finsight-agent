@@ -30,6 +30,7 @@ PROMPT_VERSION = "research_v0.2"
 FIELD_PROMPT_VERSION = "research_v0.17_critical_coverage"
 SCOPE_SUMMARY = "仅依据当前快照的行情、年度财务及估值数据；未接入新闻或公告正文。"
 ASSISTED_SUMMARY = SCOPE_SUMMARY + "本卡采用模板辅助修正：模型选择要点，程序提供事实措辞。"
+RESEARCH_CACHE_VERSION = "research_cache_v2_bound"
 FIELD_PROMPT = """你的任务只生成定性解释和风险，所有数值、单位、日期和排名已由程序在证据表中展示。
 不要复述数值或日期，不要写数字、数字占位符或“为%”“第 名”等空白句；直接解释指标含义。
 例如合法句子：{"text":"营收实现正增长，但能否延续仍需核实。","evidence_ids":["financials.revenue_growth"]}。这只是格式例子，增长方向以本次证据为准。
@@ -342,13 +343,29 @@ def research_candidate(result: ScreeningResult, candidate: dict, store: Store,
                        "endpoint": "demo" if demo else adapter.base_url,
                        "structured_transport": "demo" if demo else getattr(adapter, "structured_transport", "chat"),
                        "prompt": prompt, "schema": schema,
-                       "prompt_version": prompt_version}
+                       "prompt_version": prompt_version,
+                       "cache_version": RESEARCH_CACHE_VERSION,
+                       "screen_context": {"snapshot_id": result.snapshot_id, "as_of": str(result.as_of),
+                           "config_id": result.config_id, "strategy_version": result.strategy_version,
+                           "universe_id": result.universe_id, "membership_id": result.membership_id,
+                           "synthetic": result.synthetic, "schema_version": result.schema_version}}
     if cache_scope is not None:
         cache_input["scope"] = cache_scope
     key = fingerprint(cache_input)
     cached = store.cached(key)
     if cached:
         try:
+            if (cached.get("version") != RESEARCH_CACHE_VERSION or cached.get("cache_key") != key or
+                    cached.get("screen_context") != cache_input["screen_context"]):
+                raise ValueError("research cache context mismatch")
+            saved = ResearchCard.model_validate(cached["card"])
+            if (saved.symbol != candidate["symbol"] or saved.model != model or saved.prompt_version != prompt_version or
+                    saved.status != ("demo" if demo else "completed") or saved.evidence != evidence or
+                    saved.facts != (evidence if typed else {}) or
+                    saved.error is not None or (typed and saved.content_template is None) or
+                    any(getattr(saved, name) < 0 for name in ("llm_calls", "tool_calls", "input_tokens", "output_tokens", "elapsed_seconds"))):
+                raise ValueError("research cache card/evidence binding mismatch")
+            cached = saved.model_dump(mode="json")
             # Recheck stored prose under current rules before presenting a cache hit.
             cached["content"] = finalize_content(cached.get("content_template") or cached["content"], evidence, result.as_of).model_dump(mode="json")
         except (ValueError, TypeError, KeyError):
@@ -365,7 +382,8 @@ def research_candidate(result: ScreeningResult, candidate: dict, store: Store,
         card.content = finalize_content(template.model_dump(), evidence, result.as_of)
         card.content_template = template if typed else None
         card.elapsed_seconds = time.perf_counter() - started
-        store.cache(key, card.model_dump(mode="json"))
+        store.cache(key, {"version": RESEARCH_CACHE_VERSION, "cache_key": key,
+            "screen_context": cache_input["screen_context"], "card": card.model_dump(mode="json")})
         return card
     if isinstance(adapter, ChatAdapter):
         adapter.final_schema = schema
@@ -438,7 +456,8 @@ def research_candidate(result: ScreeningResult, candidate: dict, store: Store,
             card.content = completed_content
             card.status = "completed"
             card.elapsed_seconds = time.perf_counter() - started
-            store.cache(key, card.model_dump(mode="json"))
+            store.cache(key, {"version": RESEARCH_CACHE_VERSION, "cache_key": key,
+                "screen_context": cache_input["screen_context"], "card": card.model_dump(mode="json")})
             return card
         except httpx.HTTPStatusError as exc:
             last_error = f"{adapter.provider}: HTTP {exc.response.status_code}"

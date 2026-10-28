@@ -241,13 +241,19 @@ class FinSight:
         finally:
             if own_adapter:
                 adapter.close()
-        payload = {"screen_run_id": run_id, "provider": provider, "cards": [c.model_dump(mode="json") for c in cards],
+        payload = {"screen_run_id": run_id, "provider": provider, "model": cards[0].model if cards else None,
+                   "strategy_version": result.strategy_version, "config_id": result.config_id,
+                   "cards": [c.model_dump(mode="json") for c in cards],
                    "code_version": code_version()}
         research_id = self.store.save_run("research", result.snapshot_id, StrategyConfig.model_validate(record["config"]), payload)
         folder = self.store.artifact_dir(research_id)
         (folder / "research.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         (folder / "research.md").write_text("# FinSight 研究卡\n\n" + "\n\n---\n\n".join(render_card(c) for c in cards), encoding="utf-8")
         return cards
+
+    def saved_research(self, run_id: str) -> dict:
+        from finsight.research_history import saved_research
+        return saved_research(self.store, run_id)
 
     def backtest(self, snapshot_id: str | None = None, start: date = date(2023, 1, 1),
                  end: date = date(2024, 12, 31), capital: float = 100_000) -> dict:
