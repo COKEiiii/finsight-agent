@@ -114,7 +114,9 @@ def test_audit_requires_a_complete_case_set_and_completed_suite(recorded):
 @pytest.mark.parametrize("text,passed", [("年报信息可能已过时，需核实。", True),
     ("年报尚未过期。", False), ("请核实最新股价。", False)])
 def test_report_freshness_check_is_specific_and_accepts_outdated_synonym(text, passed):
-    assert bool(scenario_check("stale_report", content(risk=text), {})) == passed
+    value = content(risk=text)
+    value.risks[0].evidence_ids = ["financials.report_period"]
+    assert bool(scenario_check("stale_report", value, {})) == passed
 
 
 @pytest.mark.parametrize("text,passed", [("未来若营收出现负增长，需要防范风险。", False),

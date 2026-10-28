@@ -5,6 +5,7 @@ from copy import deepcopy
 
 from finsight.data.store import Store
 from finsight.models import ScreeningResult
+from finsight.research_requirements import discloses_missing, number, observed_decline, warns_stale
 
 SCENARIOS = ("actual_candidate", "missing_roe", "stale_report", "negative_growth", "unit_conversion")
 CASE_VERSION = "research_cases_v0.3"
@@ -41,19 +42,22 @@ def build_cases(result: ScreeningResult, *, allow_demo: bool = False) -> list[di
     return cases
 
 
-def _scenario_pass(scenario: str, card) -> bool:
-    if card.status != "completed" or card.content is None:
-        return False
+def scenario_check(scenario: str, content, facts) -> bool:
+    """Use the same cited disclosures as generation, for live and offline scoring."""
     if scenario == "missing_roe":
-        text = " ".join(card.content.information_gaps + [item.text for item in card.content.risks])
-        return "ROE" in text.upper() and "无法判断" in text
+        return any(discloses_missing(text, "financials.roe") for text in content.information_gaps)
     if scenario == "stale_report":
-        text = " ".join(card.content.information_gaps + [item.text for item in card.content.risks])
-        return any(word in text for word in ("年报", "财报", "报告期")) and any(word in text for word in ("陈旧", "过期", "时效"))
+        return any(warns_stale(claim) for claim in content.risks)
     if scenario == "negative_growth":
-        text = " ".join(item.text for item in card.content.risks)
-        return any(word in text for word in ("营收", "收入")) and any(word in text for word in ("下降", "负增长", "下滑"))
-    return True
+        return any(observed_decline(claim) for claim in content.risks)
+    if scenario == "unit_conversion":
+        fact = facts.get("market.amount_20", {})
+        return fact.get("unit") == "元/日" and number(fact.get("value"))
+    return scenario == "actual_candidate"
+
+
+def _scenario_pass(scenario: str, card) -> bool:
+    return card.status == "completed" and card.content is not None and scenario_check(scenario, card.content, card.facts)
 
 
 def evaluate_run(store: Store, run_id: str, *, models: tuple[str, ...] = (),

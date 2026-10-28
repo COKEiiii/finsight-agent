@@ -7,9 +7,9 @@ import pytest
 
 import finsight.evaluation_jobs as jobs
 from finsight.cli import main
-from finsight.models import ResearchCard, ResearchContent
-from finsight.research import ASSISTED_SUMMARY, SCOPE_SUMMARY
-from finsight.research_facts import facts_for
+from finsight.models import ResearchCard
+from finsight.research import ASSISTED_SUMMARY, SCOPE_SUMMARY, demo_content
+from finsight.research_facts import facts_for, render_content
 from finsight.service import FinSight
 
 
@@ -35,12 +35,9 @@ def local(monkeypatch):
     monkeypatch.setattr(jobs, "ChatAdapter", Adapter)
     def generate(result, candidate, store, adapter, **kwargs):
         calls.append({"model": adapter.model, "symbol": candidate["symbol"], **kwargs})
-        content = ResearchContent(summary=SCOPE_SUMMARY,
-            reasons=[{"text": "进入策略候选名单。", "evidence_ids": ["selection.rank"]}],
-            risks=[{"text": "营收负增长风险。", "evidence_ids": ["financials.revenue_growth"]}],
-            information_gaps=["ROE 未提供，无法判断。", "年报陈旧，需核实。", "未接入新闻。"],
-            human_checks=["人工核实财报。"])
         facts = facts_for(result, candidate)
+        content = render_content(demo_content(candidate, facts), facts)
+        content.summary = SCOPE_SUMMARY
         return ResearchCard(run_id=result.run_id, symbol=candidate["symbol"], model=adapter.model,
             prompt_version=jobs.FIELD_PROMPT_VERSION, status="completed", content=content,
             facts=facts, evidence=facts, llm_calls=1, input_tokens=11, output_tokens=7, elapsed_seconds=2)

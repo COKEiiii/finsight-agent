@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -11,30 +10,13 @@ from uuid import uuid4
 import pandas as pd
 
 from finsight.data.store import Store, code_version
+from finsight.evaluation import scenario_check
 from finsight.evaluation_jobs import _engine_id, _load
 from finsight.models import ResearchCard, ScreeningResult, StrategyConfig, fingerprint
 from finsight.research import finalize_content
-from finsight.research_facts import facts_for, hypothetical
+from finsight.research_facts import facts_for
 
-RUBRIC_VERSION = "offline_review_v0.3_risk_domains"
-
-
-def scenario_check(scenario, content, facts):
-    gaps_and_risks = content.information_gaps + [claim.text for claim in content.risks]
-    if scenario == "missing_roe":
-        return any(re.search(r"ROE|净资产收益率", text, re.I) and
-            re.search(r"未提供|缺少|缺失|缺乏", text) and "无法判断" in text for text in gaps_and_risks)
-    if scenario == "stale_report":
-        return any(re.search(r"年报|财报|报告期", text) and re.search(r"陈旧|过期|过时|时效.{0,8}(?:不足|风险|无法判断)", text) and
-            not re.search(r"不陈旧|未过期|不再过时|没有过时", text) for text in gaps_and_risks)
-    if scenario == "negative_growth":
-        pattern = re.compile(r"负增长|(?:营收|营业收入|收入).{0,8}(?:下滑|下降|负值)")
-        return any("financials.revenue_growth" in claim.evidence_ids and any(
-            not hypothetical(claim.text, match) for match in pattern.finditer(claim.text)) for claim in content.risks)
-    if scenario == "unit_conversion":
-        fact = facts.get("market.amount_20", {})
-        return fact.get("unit") == "元/日" and fact.get("value") is not None
-    return scenario == "actual_candidate"
+RUBRIC_VERSION = "offline_review_v0.4_scenario_alignment"
 
 
 def audit_suite(store: Store, suite_id: str) -> dict:
