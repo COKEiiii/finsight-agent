@@ -116,7 +116,8 @@ def test_last_request_can_select_grounded_templates_with_visible_assistance(tmp_
     _, choices = assisted_repair_schema(facts)
     payload.update(summary=ASSISTED_SUMMARY,
                    reasons=[next(item for item in choices if item["evidence_ids"] == ["financials.roe"])],
-                   risks=[next(item for item in choices if item["evidence_ids"] == ["valuation.pe_ttm"])])
+                   risks=[next(item for item in choices if item["evidence_ids"] == [field])
+                          for field in ("financials.revenue_growth", "valuation.pe_ttm", "market.momentum_60")])
     card = research_candidate(result, candidate, service.store, Answers([bad, bad, payload]))
     assert card.status == "completed" and card.llm_calls == 3
     assert "模板辅助修正" in render_card(card) and "{{" not in card.content.reasons[0].text

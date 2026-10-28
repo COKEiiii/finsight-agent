@@ -11,6 +11,56 @@ STALE = re.compile(r"陈旧|过期|过时|时效.{0,8}(?:不足|风险|无法判
 LABELS = {"financials.roe": ("ROE", "净资产收益率"),
           "financials.revenue_growth": ("营收增长", "营收", "营业收入增长"),
           "financials.report_period": ("年报报告期", "报告期", "财报期")}
+RISK_DOMAINS = {"financials": ("financials.roe", "financials.revenue_growth", "financials.report_period"),
+               "valuation": ("valuation.pe_ttm", "valuation.pb"),
+               "market": ("market.momentum_60", "market.ma_ratio")}
+DOMAIN_LABELS = {"financials": ("财务", "ROE", "净资产收益率", "营收", "收入", "年报", "报告期"),
+                 "valuation": ("估值", "PE", "PB", "市盈率", "市净率"),
+                 "market": ("趋势", "动量", "均线", "历史收益")}
+RISK_CUE = re.compile(r"风险|需|无法|不能|不足|不保证|不代表|不等于|不确定|局限|波动|回落|反转|陈旧|过期|过时|下滑|下降|负增长|持续性")
+
+
+def _cutoff(facts, as_of):
+    if as_of is not None:
+        return as_of
+    value = facts.get("selection.rank", {}).get("known_at") or facts.get("market.trade_date", {}).get("value")
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def risk_domain_fields(facts, as_of=None):
+    as_of = _cutoff(facts, as_of)
+    usable = {}
+    for domain, fields in RISK_DOMAINS.items():
+        usable[domain] = []
+        for field in fields:
+            value = facts.get(field, {}).get("value")
+            valid = number(value)
+            if field == "financials.report_period":
+                try:
+                    period = date.fromisoformat(str(value))
+                    valid = as_of is not None and period <= as_of
+                except ValueError:
+                    valid = False
+            if valid:
+                usable[domain].append(field)
+    return usable
+
+
+def risk_domain_coverage(content, facts, as_of=None):
+    usable = risk_domain_fields(facts, as_of)
+    covered = {domain: any(set(claim.evidence_ids) & set(fields) and RISK_CUE.search(claim.text) and
+        any(label.lower() in claim.text.lower() for label in DOMAIN_LABELS[domain]) for claim in content.risks)
+        for domain, fields in usable.items() if fields}
+    missing = [domain for domain, present in covered.items() if not present]
+    unavailable = [domain for domain, fields in usable.items() if not fields]
+    undisclosed = [domain for domain in unavailable if not any(
+        "无法判断" in text and MISSING.search(text) and any(label.lower() in text.lower() for label in DOMAIN_LABELS[domain])
+        for text in content.information_gaps)]
+    return {"covered": covered, "missing_domains": missing, "unavailable_domains": unavailable,
+            "undisclosed_unavailable_domains": undisclosed}
 
 
 def number(value):
@@ -26,12 +76,7 @@ def hypothetical(text: str, match: re.Match) -> bool:
 
 
 def required_coverage(facts, as_of: date | None = None):
-    if as_of is None:
-        cutoff = facts.get("selection.rank", {}).get("known_at") or facts.get("market.trade_date", {}).get("value")
-        try:
-            as_of = date.fromisoformat(str(cutoff))
-        except ValueError:
-            as_of = None
+    as_of = _cutoff(facts, as_of)
     missing = [field for field in ("financials.roe", "financials.revenue_growth")
                if not number(facts.get(field, {}).get("value"))]
     try:
@@ -47,7 +92,10 @@ def required_coverage(facts, as_of: date | None = None):
         risks.append("financials.revenue_growth")
     if age is not None and age > 550:
         risks.append("financials.report_period")
+    domains = risk_domain_fields(facts, as_of)
     return {"missing_financial_fields": missing, "required_risk_fields": risks,
+            "required_risk_domains": [domain for domain, fields in domains.items() if fields],
+            "unavailable_risk_domains": [domain for domain, fields in domains.items() if not fields],
             "negative_revenue_growth": "financials.revenue_growth" in risks,
             "annual_report_stale": "financials.report_period" in risks}
 
@@ -87,6 +135,11 @@ def check_required_coverage(content, facts, as_of=None):
         errors.append("risks: observed negative revenue growth missing; 引用financials.revenue_growth并说明当前营收负增长，不能仅写入选理由或未来条件")
     if needs["annual_report_stale"] and not any(warns_stale(claim) for claim in content.risks):
         errors.append("risks: stale annual report warning missing; 引用financials.report_period并明确年报数据陈旧或过时")
+    coverage = risk_domain_coverage(content, facts, as_of)
+    for domain in coverage["missing_domains"]:
+        errors.append(f"risks: missing domain {domain}; 风险必须引用该方面可用字段并说明局限或风险，不能仅列入选理由或正面指标")
+    for domain in coverage["undisclosed_unavailable_domains"]:
+        errors.append(f"information_gaps: unavailable domain {domain}; 明确说明该方面指标未提供，无法判断")
     if errors:
         raise ValueError(" | ".join(errors))
 
@@ -97,4 +150,6 @@ def assisted_information_gaps(facts):
     gaps.extend(f"未提供有效{LABELS[field][0]}，无法判断该指标。" for field in needs["missing_financial_fields"])
     if needs["annual_report_stale"]:
         gaps.append("年报数据陈旧，无法判断最新财务表现。")
+    for domain in needs["unavailable_risk_domains"]:
+        gaps.append(f"未提供有效{'财务' if domain == 'financials' else '估值' if domain == 'valuation' else '趋势'}指标，无法判断该方面风险。")
     return gaps

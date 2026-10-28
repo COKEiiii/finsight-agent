@@ -24,10 +24,11 @@ from finsight.research_requirements import (
     check_required_coverage,
     number,
     required_coverage,
+    risk_domain_fields,
 )
 
 PROMPT_VERSION = "research_v0.2"
-FIELD_PROMPT_VERSION = "research_v0.17_critical_coverage"
+FIELD_PROMPT_VERSION = "research_v0.18_risk_domains"
 SCOPE_SUMMARY = "仅依据当前快照的行情、年度财务及估值数据；未接入新闻或公告正文。"
 ASSISTED_SUMMARY = SCOPE_SUMMARY + "本卡采用模板辅助修正：模型选择要点，程序提供事实措辞。"
 RESEARCH_CACHE_VERSION = "research_cache_v2_bound"
@@ -44,6 +45,10 @@ summary 只说明分析范围，information_gaps 和 human_checks 只写定性�
 required_disclosures 列出本次必须披露的缺口与风险。缺失财务字段在 information_gaps 明确写“未提供该指标，无法判断”。
 已经发生的营收负增长必须写入 risks 并引用 financials.revenue_growth；放在 reasons 或仅写未来假设不算完成。
 陈旧年报必须写入 risks 并引用 financials.report_period。其余财务、趋势与估值分析仍按证据说明。
+risks 必须覆盖财务、估值和趋势三个方面，各引用该方面可用指标并写明风险或局限；入选理由中的指标不替代风险。
+趋势风险引用 market.momentum_60 或 market.ma_ratio，成交额不能替代趋势。正面指标说明不算风险。
+某方面完全没有可用字段时，不编造风险引用，在 information_gaps 明确写未提供该方面指标、无法判断。
+风险最多四条；营收负增长与陈旧年报并存时，两项具体风险和估值、趋势风险都须保留。
 仅输出完整 JSON，不写 Markdown、注释或 JSON 后的解释。
 """
 SYSTEM_PROMPT = """你是 FinSight A 股研究助手。只使用用户提供的当前运行快照证据。
@@ -69,6 +74,7 @@ def content_schema(evidence_ids: list[str], typed: bool = False) -> dict:
         schema["properties"]["summary"]["enum"] = [SCOPE_SUMMARY]
         for name in ("reasons", "risks", "information_gaps", "human_checks"):
             schema["properties"][name]["maxItems"] = 3
+        schema["properties"]["risks"]["maxItems"] = 4
         for name in ("information_gaps", "human_checks"):
             schema["properties"][name]["items"].update(maxLength=180)
     return schema
@@ -79,9 +85,9 @@ def assisted_repair_schema(evidence: dict) -> tuple[dict, list[dict]]:
     templates = {
         "selection.rank": "策略排名为{{selection.rank}}，该名次由固定规则计算。",
         "selection.score": "综合评分为{{selection.score}}，需结合各因子原值理解。",
-        "financials.roe": "净资产收益率为{{financials.roe}}，参与财务质量评分。",
+        "financials.roe": "净资产收益率为{{financials.roe}}，仅此指标无法判断财务稳健性。",
         "financials.revenue_growth": "营收同比增长为{{financials.revenue_growth}}，其持续性仍需核实。",
-        "market.momentum_60": "六十日动量为{{market.momentum_60}}，仅反映历史价格趋势。",
+        "market.momentum_60": "六十日动量为{{market.momentum_60}}，仅反映历史价格趋势，不能保证趋势延续。",
         "market.ma_ratio": "均线比值为{{market.ma_ratio}}，不能据此判断股价相对均线的位置。",
         "market.amount_20": "平均成交额为{{market.amount_20}}，未来流动性仍需核实。",
         "valuation.pe_ttm": "市盈率为{{valuation.pe_ttm}}，缺少比较依据，无法判断估值是否合理。",
@@ -89,22 +95,37 @@ def assisted_repair_schema(evidence: dict) -> tuple[dict, list[dict]]:
     }
     growth = evidence.get("financials.revenue_growth", {}).get("value")
     needs = required_coverage(evidence)
+    if "financials.report_period" in risk_domain_fields(evidence)["financials"]:
+        templates["financials.report_period"] = "年报报告期为{{financials.report_period}}，单份年报不能说明后续财务变化。"
     if number(growth) and growth < 0:
         templates["financials.revenue_growth"] += "当前营收为负增长，需核实业务变化。"
     if needs["annual_report_stale"]:
         templates["financials.report_period"] = "年报报告期为{{financials.report_period}}，数据陈旧，无法判断最新财务表现。"
     choices = [{"text": text, "evidence_ids": [key]} for key, text in templates.items() if key in evidence and
-               (key == "financials.report_period" or number(evidence[key].get("value")))]
+               (key in risk_domain_fields(evidence)["financials"] or number(evidence[key].get("value")))]
     schema = content_schema(list(evidence), typed=True)
     schema["properties"]["summary"]["enum"] = [ASSISTED_SUMMARY]
     schema["properties"]["summary"]["maxLength"] = 240
-    schema["properties"]["risks"]["minItems"] = max(1, len(needs["required_risk_fields"]))
+    schema["properties"]["risks"]["minItems"] = max(1, len(required_risk_choices(evidence, choices)))
     schema["$defs"]["EvidenceClaim"] = {"oneOf": [
         {"type": "object", "properties": {"text": {"type": "string", "enum": [choice["text"]]},
          "evidence_ids": {"type": "array", "items": {"type": "string", "enum": choice["evidence_ids"]},
                           "minItems": 1, "maxItems": 1}},
          "required": ["text", "evidence_ids"], "additionalProperties": False} for choice in choices]}
     return schema, choices
+
+
+def required_risk_choices(evidence, choices):
+    needs = required_coverage(evidence)
+    by_field = {claim["evidence_ids"][0]: claim for claim in choices}
+    selected = [by_field[field] for field in needs["required_risk_fields"] if field in by_field]
+    for domain, fields in risk_domain_fields(evidence).items():
+        if fields and not any(claim["evidence_ids"][0] in fields for claim in selected):
+            preference = ("financials.revenue_growth", "financials.roe", "financials.report_period") if domain == "financials" else fields
+            field = next((field for field in preference if field in by_field and field in fields), None)
+            if field:
+                selected.append(by_field[field])
+    return selected
 
 
 def research_model(provider: str, model: str | None = None) -> str:
@@ -314,13 +335,17 @@ def demo_content(candidate: dict, evidence: dict | None = None) -> ResearchConte
             value["reasons"][1] = {"text": "已提供的财务指标参与财务质量评分。", "evidence_ids": available_financials}
         else:
             value["reasons"].pop(1)
+        other_fields = [key for key in ("market.momentum_60", "valuation.pe_ttm", "valuation.pb")
+                        if number(evidence.get(key, {}).get("value"))]
+        if other_fields:
+            value["reasons"][-1] = {"text": "其他已提供的行情或估值字段随卡片列出，未来表现无法判断。",
+                                    "evidence_ids": other_fields}
+        else:
+            value["reasons"].pop()
         value["information_gaps"] = assisted_information_gaps(evidence)
-        if "financials.revenue_growth" in needs["missing_financial_fields"]:
-            value["risks"][0] = {"text": "股价趋势不能保证未来表现。", "evidence_ids": ["market.momentum_60"]}
-        if needs["negative_revenue_growth"]:
-            value["risks"].append({"text": "当前营收出现负增长，需核实原因及持续性。", "evidence_ids": ["financials.revenue_growth"]})
-        if needs["annual_report_stale"]:
-            value["risks"].append({"text": "年报数据陈旧，无法判断最新财务表现。", "evidence_ids": ["financials.report_period"]})
+        _, choices = assisted_repair_schema(evidence)
+        value["risks"] = required_risk_choices(evidence, choices) or [
+            {"text": "仅凭策略排名无法判断财务、估值与趋势风险。", "evidence_ids": ["selection.rank"]}]
         return ResearchContent.model_validate(value)
     return ResearchContent.model_validate({
         "summary": "离线模板演示：仅解释现有行情、年报指标及估值，未调用任何模型。",
@@ -419,7 +444,7 @@ def research_candidate(result: ScreeningResult, candidate: dict, store: Store,
             messages = messages[:2] + [{"role": "user", "content": json.dumps({
                 "instruction": "本轮使用模板辅助修正。reasons 和 risks 只能从 allowed_claims 选择，原样保留 text 与 evidence_ids 配对；summary 必须声明模板辅助修正。其余字段保持定性。",
                 "allowed_claims": assisted_choices, "summary": ASSISTED_SUMMARY,
-                "mandatory_risks": [claim for claim in assisted_choices if claim["evidence_ids"][0] in needs["required_risk_fields"]],
+                "mandatory_risks": required_risk_choices(evidence, assisted_choices),
                 "risk_instruction": "risks 必须包含 mandatory_risks 每一项，不能只放在 reasons；其余风险仍可选择。缺口由实际字段推导。",
                 "json_schema": repair_schema}, ensure_ascii=False)}]
         message = None

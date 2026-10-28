@@ -29,7 +29,10 @@ def research_case(tmp_path):
 def payload():
     return {"summary": SCOPE_SUMMARY,
         "reasons": [{"text": "固定规则确定候选名单。", "evidence_ids": ["selection.rank"]}],
-        "risks": [{"text": "缺少比较依据，无法判断估值是否合理。", "evidence_ids": ["valuation.pe_ttm"]}],
+        "risks": [
+            {"text": "营收增长的持续性需核实。", "evidence_ids": ["financials.revenue_growth"]},
+            {"text": "缺少比较依据，无法判断估值是否合理。", "evidence_ids": ["valuation.pe_ttm"]},
+            {"text": "历史动量不能保证趋势延续。", "evidence_ids": ["market.momentum_60"]}],
         "information_gaps": ["未接入新闻和公告正文，无法判断最新事件。"],
         "human_checks": ["核实年报与交易状态。"]}
 
@@ -69,7 +72,7 @@ def test_negative_growth_in_reasons_or_future_conditions_cannot_replace_observed
     facts = evidence_for(result, candidate)
     bad = payload()
     bad["reasons"].append({"text": "当前营收负增长。", "evidence_ids": ["financials.revenue_growth"]})
-    bad["risks"] = [{"text": text, "evidence_ids": ["financials.revenue_growth"]}]
+    bad["risks"] = [{"text": text, "evidence_ids": ["financials.revenue_growth"]}] + payload()["risks"][1:]
     with pytest.raises(ValueError, match="observed negative"):
         finalize_content(bad, facts)
     bad["risks"][0]["text"] = "当前营收出现负增长，应核实原因。"
@@ -84,7 +87,7 @@ def test_stale_annual_report_needs_a_cited_risk_not_only_a_gap(research_case):
     bad["information_gaps"].append("年报信息已过时，无法判断最新财务表现。")
     with pytest.raises(ValueError, match="stale annual"):
         finalize_content(bad, facts)
-    bad["risks"] = [{"text": "年报信息可能已过时，需核实最新财务表现。", "evidence_ids": ["financials.report_period"]}]
+    bad["risks"] = [{"text": "年报信息可能已过时，需核实最新财务表现。", "evidence_ids": ["financials.report_period"]}] + payload()["risks"][1:]
     assert finalize_content(bad, facts)
     schema, choices = assisted_repair_schema(facts)
     assert any(choice["evidence_ids"] == ["financials.report_period"] for choice in choices)
@@ -116,7 +119,8 @@ def test_valid_second_response_repairs_required_gap_without_changing_ranking(res
 
 def assisted(facts, required_risks=()):
     _, choices = assisted_repair_schema(facts)
-    risks = [next(c for c in choices if c["evidence_ids"] == [field]) for field in required_risks]
+    fields = list(required_risks) if required_risks else ["financials.roe"]
+    risks = [next(c for c in choices if c["evidence_ids"] == [field]) for field in fields + ["valuation.pe_ttm", "market.momentum_60"]]
     return {"summary": ASSISTED_SUMMARY, "reasons": [choices[0]],
         "risks": risks or [next(c for c in choices if c["evidence_ids"] == ["valuation.pe_ttm"])],
         "information_gaps": ["需核实数据。"], "human_checks": ["核实财报。"]}
@@ -128,12 +132,12 @@ def test_final_assisted_request_keeps_all_mandatory_risks(research_case):
     facts = evidence_for(result,candidate)
     required = ["financials.revenue_growth","financials.report_period"]
     schema,_ = assisted_repair_schema(facts)
-    assert schema["properties"]["risks"]["minItems"] == 2
+    assert schema["properties"]["risks"]["minItems"] == 4
     adapter = Responses([payload(),payload(),assisted(facts,required)])
     card = research_candidate(result,candidate,service.store,adapter)
     assert card.status == "completed" and card.llm_calls == 3
     instruction = json.loads(adapter.messages[-1][-1]["content"])
-    assert {c["evidence_ids"][0] for c in instruction["mandatory_risks"]} == set(required)
+    assert {c["evidence_ids"][0] for c in instruction["mandatory_risks"]} == set(required) | {"valuation.pe_ttm", "market.momentum_60"}
     assert "模板辅助修正" in card.content.summary
     assert any("负增长" in c.text for c in card.content.risks) and any("陈旧" in c.text for c in card.content.risks)
 

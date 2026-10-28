@@ -327,6 +327,7 @@ def main():
                 format_func=lambda identifier: f"{by_group[identifier]['provider']} · {by_group[identifier]['model']} · {by_group[identifier]['prompt_version']}")
             saved = by_group[chosen_group]
             st.caption(f"已保存 {saved['saved_symbols']}/{saved['candidate_count']} 只；同一模型和提示词版本的分批结果合并展示，按候选排名排序。")
+            st.caption(f"当前自动检查 {saved['current_validated_cards']}/{saved['saved_symbols']} 通过 · 规则 {saved['current_rule_version']}；人工质量验收另行记录。")
             st.caption("下方为所选的已保存报告；上方模型选项用于下一次生成。刷新不会调用模型。")
             from finsight.models import ResearchCard
             cards = [ResearchCard.model_validate(row["card"]) for row in saved["cards"]]
@@ -334,6 +335,10 @@ def main():
                 st.info("这些卡片保留旧版生成状态；重新生成时会使用当前的风险完整性检查，并计入模型请求预算。")
             for card, entry in zip(cards, saved["cards"]):
                 with st.expander(f"{card.symbol} · {card.model} · {card.status}", expanded=len(cards) == 1):
+                    if not entry["current_validation"]["passed"]:
+                        st.warning("当前自动检查未通过，需修正或人工核实；原报告状态保留。")
+                        with st.expander("当前检查详情"):
+                            st.code(entry["current_validation"]["issue"], language=None)
                     st.markdown(render_card(card))
                     if card.error:
                         with st.expander("诊断详情"):

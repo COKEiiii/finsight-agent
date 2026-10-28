@@ -5,11 +5,30 @@ import json
 
 from finsight.data.store import Store
 from finsight.models import ResearchCard, ScreeningResult, StrategyConfig, fingerprint
-from finsight.research import evidence_for
+from finsight.research import FIELD_PROMPT_VERSION, evidence_for, finalize_content
 
 
 def report_group(provider: str, model: str, prompt_version: str) -> str:
     return fingerprint({"provider": provider, "model": model, "prompt_version": prompt_version})
+
+
+def current_check(card, evidence, result):
+    check = {"rule_version": FIELD_PROMPT_VERSION, "passed": False, "issue": None}
+    try:
+        if card.status == "failed":
+            raise ValueError("original generation failed; original status retained")
+        if result.schema_version >= 2 and card.content_template is None:
+            raise ValueError("original typed template unavailable; cannot verify current rules")
+        value = card.content_template or card.content
+        if value is None:
+            raise ValueError("no saved content to verify")
+        rendered = finalize_content(value.model_dump(), evidence, result.as_of)
+        if result.schema_version >= 2 and rendered != card.content:
+            raise ValueError("saved displayed content differs from verified original template")
+        check["passed"] = True
+    except (ValueError, TypeError, KeyError) as exc:
+        check["issue"] = str(exc)[:800]
+    return check
 
 
 def saved_research(store: Store, run_id: str) -> dict:
@@ -65,7 +84,8 @@ def saved_research(store: Store, run_id: str) -> dict:
                 "snapshot_id": result.snapshot_id, "as_of": str(result.as_of), "timestamp_timezone": "UTC",
                 "strategy_version": result.strategy_version, "config_id": result.config_id})
             entry = {"card": card.model_dump(mode="json"), "research_run_id": record["run_id"],
-                "batch_id": payload.get("batch_id"), "created_at": record["created_at"], "previous_completed": None}
+                "batch_id": payload.get("batch_id"), "created_at": record["created_at"], "previous_completed": None,
+                "current_validation": current_check(card, evidence, result)}
             latest = group["cards"].get(card.symbol)
             if latest is None:
                 group["cards"][card.symbol] = entry
@@ -77,5 +97,7 @@ def saved_research(store: Store, run_id: str) -> dict:
             candidates[row["card"]["symbol"]]["rank"], row["card"]["symbol"]))
         group["saved_symbols"] = len(group["cards"])
         group["candidate_count"] = len(result.candidates)
+        group["current_rule_version"] = FIELD_PROMPT_VERSION
+        group["current_validated_cards"] = sum(entry["current_validation"]["passed"] for entry in group["cards"])
     return {"screen_run_id": run_id, "snapshot_id": result.snapshot_id, "strategy_version": result.strategy_version,
         "config_id": result.config_id, "groups": list(groups.values()), "rejected": rejected, "model_calls": 0}

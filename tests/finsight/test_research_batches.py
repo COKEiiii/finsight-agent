@@ -24,8 +24,9 @@ def saved(s, result, count=3, *, provider="deepseek", model="fixture", version=F
     cards = []
     for c in result.candidates[:count]:
         facts = evidence_for(result, c)
+        template = demo_content(c, facts)
         cards.append(ResearchCard(run_id=result.run_id, symbol=c["symbol"], model=model, prompt_version=version,
-            status=status, content=render_content(demo_content(c, facts), facts) if status == "completed" else None,
+            status=status, content=render_content(template, facts) if status == "completed" else None, content_template=template,
             facts=facts, evidence=facts).model_dump(mode="json"))
     s.store.save_run("research", result.snapshot_id, s.config, {"screen_run_id": result.run_id, "provider": provider, "cards": cards})
 

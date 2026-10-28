@@ -13,10 +13,12 @@ from finsight.research_facts import facts_for, render_content
 from finsight.service import FinSight
 
 
-def content(risk="数据存在局限。", gaps=None):
+def content(risk="财务数据存在局限，需核实后续变化。", gaps=None):
     return ResearchContent(summary=SCOPE_SUMMARY,
         reasons=[{"text": "策略排名来自固定规则。", "evidence_ids": ["selection.rank"]}],
-        risks=[{"text": risk, "evidence_ids": ["financials.revenue_growth"]}],
+        risks=[{"text": risk, "evidence_ids": ["financials.revenue_growth"]},
+            {"text": "估值缺少比较依据，无法判断是否合理。", "evidence_ids": ["valuation.pe_ttm"]},
+            {"text": "历史动量不能保证趋势延续。", "evidence_ids": ["market.momentum_60"]}],
         information_gaps=gaps or ["未接新闻或公告正文，无法判断最新事件。"], human_checks=["核实年报。"])
 
 
@@ -33,7 +35,9 @@ def recorded(tmp_path):
         template = content()
         if case["scenario"] == "actual_candidate":
             _, choices = assisted_repair_schema(facts)
-            template = ResearchContent(summary=ASSISTED_SUMMARY, reasons=[choices[0]], risks=[choices[-1]],
+            template = ResearchContent(summary=ASSISTED_SUMMARY, reasons=[choices[0]],
+                risks=[next(c for c in choices if c["evidence_ids"] == [field]) for field in
+                    ("financials.revenue_growth", "valuation.pe_ttm", "market.momentum_60")],
                 information_gaps=["未接新闻，无法判断。"],
                 human_checks=["需核实营收增长是否可持续，以及市盈率和市净率是否合理。"])
         elif case["scenario"] == "missing_roe":

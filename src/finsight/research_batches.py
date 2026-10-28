@@ -55,7 +55,8 @@ def research_plan(store: Store, run_id: str, provider="ollama", model=None, limi
         wanted = report_group(provider, resolved, version)
         for group in saved_research(store, run_id)["groups"]:
             if group["group_id"] == wanted:
-                ready = {entry["card"]["symbol"] for entry in group["cards"] if entry["card"]["status"] in {"completed", "demo"}}
+                ready = {entry["card"]["symbol"] for entry in group["cards"] if entry["card"]["status"] in {"completed", "demo"}
+                         and entry["current_validation"]["passed"]}
     skipped = [candidate["symbol"] for candidate in selected if candidate["symbol"] in ready]
     pending = [candidate["symbol"] for candidate in selected if candidate["symbol"] not in ready]
     planned = pending[:limit]

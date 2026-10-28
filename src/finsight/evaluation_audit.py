@@ -16,7 +16,7 @@ from finsight.models import ResearchCard, ScreeningResult, StrategyConfig, finge
 from finsight.research import finalize_content
 from finsight.research_facts import facts_for, hypothetical
 
-RUBRIC_VERSION = "offline_review_v0.2_required_coverage"
+RUBRIC_VERSION = "offline_review_v0.3_risk_domains"
 
 
 def scenario_check(scenario, content, facts):
