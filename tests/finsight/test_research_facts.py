@@ -363,6 +363,30 @@ def test_explicit_disclaimer_is_not_an_invented_metric(tmp_path):
         validate_content(payload, facts)
 
 
+@pytest.mark.parametrize("text", ["复核PE/PB计算所用股本、净利润与净资产来源及报告期一致性。",
+    "核验净利润数据来源和计算口径。", "检查毛利率数据是否完整。", "验证负债率来源的准确性。",
+    "复核市盈率和市净率是否合理。"])
+def test_additional_verification_verbs_are_tasks_only_in_human_checks(tmp_path, text):
+    _, _, candidate, facts = ready(tmp_path)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["human_checks"] = [text]
+    assert validate_content(payload, facts)
+    payload["human_checks"] = ["核对年报。"]
+    payload["reasons"][0] = {"text": text, "evidence_ids": ["selection.rank"]}
+    with pytest.raises(ValueError):
+        validate_content(payload, facts)
+
+
+@pytest.mark.parametrize("text", ["复核资料显示净利润高速增长。", "核验数据表明毛利率来源可靠。",
+    "验证结果为负债率已经下降。", "检查净利润来源。净利润高速增长。"])
+def test_verification_verbs_do_not_excuse_assertions_of_unprovided_metrics(tmp_path, text):
+    _, _, candidate, facts = ready(tmp_path)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["human_checks"] = [text]
+    with pytest.raises(ValueError, match="not in this snapshot"):
+        validate_content(payload, facts)
+
+
 def test_positive_trend_does_not_assign_the_average_comparison_to_price(tmp_path):
     _, _, candidate, facts = ready(tmp_path)
     payload = demo_content(candidate, facts).model_dump()

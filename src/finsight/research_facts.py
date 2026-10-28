@@ -60,7 +60,7 @@ def term_matches(text: str, term: str):
 def check_comparison(text: str, *, verification: bool = False):
     verify_scope = False
     for clause in re.split(r"[。；;，,]", text):
-        own_verb = bool(re.search(r"核实|核对|检查|确认|验证|评估|判断", clause))
+        own_verb = bool(re.search(r"核实|核对|检查|确认|验证|评估|判断|复核|核验", clause))
         connected = bool(re.match(r"\s*(?:以及|并|同时|及)", clause))
         comparison = COMPARISON.search(clause) or BENCHMARK_COMPARISON.search(clause)
         if comparison and not UNCERTAIN.search(clause):
@@ -73,11 +73,15 @@ def check_comparison(text: str, *, verification: bool = False):
         verify_scope = own_verb or (verify_scope and connected)
 
 
-def check_unprovided_metrics(text: str):
+def check_unprovided_metrics(text: str, *, verification: bool = False):
     for clause in re.split(r"[。；;，,]", text):
         for word in ("市值", "净利润", "净利率", "毛利率", "负债率", "资金流向", "护城河"):
             if word not in clause or any(term in clause for term in (
                 "无法判断", "未提供", "缺少", "缺乏", "核实", "核对", "确认", "无法核验")):
+                continue
+            if (verification and re.match(r"\s*(?:请)?(?:复核|核验|检查|验证)", clause) and
+                    re.search(r"是否|来源|口径|一致性|准确性|完整性|计算", clause) and
+                    not re.search(r"显示|表明|证明|证实|发现|结果为|已经", clause)):
                 continue
             prefix = clause[:clause.index(word)]
             if re.search(r"(?:不代表|不等于|(?:不能|无法).{0,8}(?:推断|判断|证明|说明)).{0,12}$", prefix):
@@ -191,7 +195,7 @@ def _check_field_claims(content: ResearchContent, facts: dict[str, dict]):
         if match:
             raise ValueError(f"model narrative contains a number ({match.group()}); omit quantities and dates from: {text[:120]}")
         check_comparison(text, verification=verification)
-        check_unprovided_metrics(text)
+        check_unprovided_metrics(text, verification=verification)
     for claim in content.reasons + content.risks:
         if any(key not in facts for key in claim.evidence_ids):
             raise ValueError("research card cites unknown field evidence")

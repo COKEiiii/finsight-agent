@@ -204,3 +204,16 @@ def test_success_after_unreported_api_failure_still_marks_usage_unknown(api, mon
         report = jobs.run_suite(s.store,prepare(api,"qwen",limit=1)["suite_id"])
     assert report["models"]["qwen-fixture"]["completed"] == 1 and report["budget"]["unknown_usage_cases"] == 1
     assert len(attempts) == 2 and s.research_usage("qwen")["evaluation_usage_unknown_cases"] == 1
+
+
+def test_persistent_api_failure_does_not_instruct_user_to_repair_ollama(api, monkeypatch):
+    s, _, calls, closed, generate = api
+    suite = prepare(api, "qwen", limit=5)
+    def unavailable(*args, **kw):
+        card = generate(*args, **kw)
+        card.status, card.content, card.error = "failed", None, "qwen: request timed out or service unavailable"
+        return card
+    monkeypatch.setattr(jobs, "research_candidate", unavailable)
+    with pytest.raises(ValueError, match="configured provider") as error:
+        jobs.run_suite(s.store, suite["suite_id"])
+    assert "Ollama" not in str(error.value) and len(calls) == 3 and closed == ["qwen"]

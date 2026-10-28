@@ -376,7 +376,9 @@ def run_suite(store: Store, suite_id: str, *, models=()):
                         provider_failed = card.status == "failed" and (card.error or "").startswith(provider + ":")
                         consecutive_provider_failures = consecutive_provider_failures + 1 if provider_failed else 0
                         if consecutive_provider_failures >= 3:
-                            raise ValueError("persistent local provider failures; completed cases retained, repair Ollama before resuming")
+                            if provider == "ollama":
+                                raise ValueError("persistent local provider failures; completed cases retained, repair Ollama before resuming")
+                            raise ValueError(f"persistent {provider} API provider failures; completed cases retained, repair the configured provider before resuming")
                 finally:
                     adapter.close()
             state.update(status="completed", pid=None)
