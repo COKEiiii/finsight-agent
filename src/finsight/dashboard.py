@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 from finsight.collection_status import elapsed_seconds, recovery_status
 from finsight.data.quality import audit
+from finsight.evaluation_review import completed_suites, import_review, review_packet, review_status
 from finsight.jobs import Jobs
 from finsight.models import ScreeningResult, StrategyConfig, TradeJournalEntry
 from finsight.portfolio import import_journal, journal_entries, portfolio_plan
@@ -282,6 +283,48 @@ def main():
             st.download_button("下载研究报告 Markdown", "\n\n---\n\n".join(render_card(c) for c in cards), file_name="research.md")
         else:
             st.info("先运行选股，再选择本地模型或离线模板生成报告。")
+        with st.expander("研究卡人工验收"):
+            suites = completed_suites(service.store)
+            if not suites:
+                st.info("完成模型评估后，可在这里下载原卡和审阅表；此处不会调用模型。")
+            else:
+                suite_id = st.selectbox("待审阅评估套件", suites)
+                try:
+                    review = review_status(service.store, suite_id)
+                    st.caption("验收绑定原套件的提示词和响应版本；变造案例只用于评估，不作为候选研究报告。")
+                    review_columns = {"reviewed": "已审阅", "planned": "案例总数", "serious_factual_errors": "严重事实错误",
+                        "incomplete_completed_cards": "成功卡证据缺口", "unavailable_cards": "未成功生成",
+                        "manual_revision_count": "人工修订次数", "review_seconds": "人工审阅秒数",
+                        "generation_seconds": "模型生成秒数", "automated_gate_passed": "原自动检查通过",
+                        "quality_gate_passed": "研究质量通过"}
+                    review_table = pd.DataFrame.from_dict(review["models"], orient="index")
+                    review_table.index.name = "模型"
+                    st.dataframe(review_table[list(review_columns)].rename(columns=review_columns), width="stretch")
+                    st.caption("人工指标只统计已审阅案例，尚未审阅时留空；未成功生成数量来自原评估。")
+                    if review["quality_gate_passed"]:
+                        st.success("此套件原版本的自动检查和人工验收通过。")
+                    else:
+                        st.info("研究质量尚未全部验收；查看审阅数量、证据缺口与原自动检查结果。")
+                    if st.button("准备人工审阅包"):
+                        packet = review_packet(service.store, suite_id)
+                        st.session_state["review_packet"] = packet
+                    packet = st.session_state.get("review_packet")
+                    if packet and packet["suite_id"] == suite_id:
+                        st.download_button("下载绑定审阅表 CSV", packet["template_csv"].encode("utf-8"),
+                            file_name=f"{suite_id}-review.csv", mime="text/csv")
+                        st.download_button("下载待审阅原卡 Markdown", packet["cards_markdown"], file_name=f"{suite_id}-cards.md")
+                    st.caption("逐行填写 reviewer、错误数量、evidence_complete（true/false）、修订次数和秒数；问题写入 notes。未审阅行留空。每次导入保存整份进度，不自动合并其他文件。")
+                    uploaded_review = st.file_uploader("导入填写后的研究卡审阅表", type=["csv"], key="research_review_upload")
+                    if uploaded_review and st.button("保存人工审阅进度"):
+                        import_review(service.store, suite_id, uploaded_review.getvalue().decode("utf-8-sig"))
+                        st.rerun()
+                    if review.get("run_id"):
+                        saved_csv = service.store.root / "exports" / review["run_id"] / "review.csv"
+                        if saved_csv.exists():
+                            st.download_button("下载已保存审阅进度 CSV", saved_csv.read_bytes(), file_name="review-progress.csv", mime="text/csv")
+                        st.download_button("下载人工验收结果 JSON", json.dumps(review, ensure_ascii=False, indent=2), file_name="human-review.json")
+                except (ValueError, OSError, KeyError) as exc:
+                    st.error(str(exc))
     with portfolio_tab:
         st.subheader("模拟组合与研究表现")
         capital = st.number_input("初始模拟资金（元）", min_value=1000.0, value=100000.0, step=10000.0)

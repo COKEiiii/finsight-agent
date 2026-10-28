@@ -54,6 +54,9 @@ def parser() -> argparse.ArgumentParser:
     evaluation_source.add_argument("--resume", metavar="SUITE_ID", help="resume saved local evaluation checkpoints")
     evaluation_source.add_argument("--status", metavar="SUITE_ID", help="read saved progress without calling a model")
     evaluation_source.add_argument("--audit", metavar="SUITE_ID", help="offline revalidation of saved responses; no model requests")
+    evaluation_source.add_argument("--review-template", metavar="SUITE_ID", help="export bound human-review CSV and original cards")
+    evaluation_source.add_argument("--review", metavar="SUITE_ID", help="read human review or import --review-file CSV; no model requests")
+    evaluation.add_argument("--review-file", type=Path, help="filled bound CSV; only with --review")
     evaluation.add_argument("--models", help="comma-separated local models; omit to prepare cases only")
     evaluation.add_argument("--limit", type=int, help="number of cases per model when creating a suite; default 30")
     backtest = commands.add_parser("backtest", help="daily ledger and comparable momentum baseline")
@@ -171,7 +174,19 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "evaluate":
             from finsight.evaluation import evaluate_run
             from finsight.evaluation_jobs import run_suite, suite_status
-            if args.audit:
+            if args.review_file and not args.review:
+                raise ValueError("review-file requires --review SUITE_ID")
+            if args.review or args.review_template:
+                from finsight.evaluation_review import export_packet, import_review, review_status
+                if args.models or args.limit is not None:
+                    raise ValueError("human review cannot change evaluation models or limit")
+                if args.review_template:
+                    output(export_packet(service.store, args.review_template))
+                elif args.review_file:
+                    output(import_review(service.store, args.review, args.review_file.read_text(encoding="utf-8-sig")))
+                else:
+                    output(review_status(service.store, args.review))
+            elif args.audit:
                 from finsight.evaluation_audit import audit_suite
                 if args.models or args.limit is not None:
                     raise ValueError("offline audit cannot change evaluation models or limit")
