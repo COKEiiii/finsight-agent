@@ -90,17 +90,23 @@ def test_local_adapter_uses_native_ollama_wire_format():
     assert json.loads(value["message"]["tool_calls"][0]["function"]["arguments"]) == {"evidence_id": "market"}
 
 
-def test_deepseek_preserves_tool_ids_and_disables_thinking(monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-only")
+@pytest.mark.parametrize("provider", ["deepseek", "qwen"])
+def test_api_preserves_tool_ids_and_uses_provider_thinking_parameters(monkeypatch, provider):
+    monkeypatch.setenv(provider.upper() + "_API_KEY", "test-only")
     seen = []
     def handler(request):
         seen.append(json.loads(request.content))
         return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": '{}'}}], "usage": {}})
-    adapter = ChatAdapter("deepseek", "test", httpx.Client(transport=httpx.MockTransport(handler)))
+    adapter = ChatAdapter(provider, "test", httpx.Client(transport=httpx.MockTransport(handler)))
     messages = [{"role": "tool", "tool_call_id": "call-42", "name": "read_evidence", "content": '{}'}]
     adapter.complete(messages, [], final=True)
     assert seen[0]["messages"][0]["tool_call_id"] == "call-42"
-    assert seen[0]["thinking"] == {"type": "disabled"}
+    if provider == "qwen":
+        assert seen[0]["enable_thinking"] is False and "thinking" not in seen[0]
+    else:
+        assert seen[0]["thinking"] == {"type": "disabled"} and "enable_thinking" not in seen[0]
+    assert seen[0]["response_format"] == {"type": "json_object"}
+    assert seen[0]["max_tokens"] == 1500 and adapter.unreported_requests == 1
 
 
 def test_offline_template_is_explicitly_labeled(bundle, store):

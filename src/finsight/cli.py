@@ -47,7 +47,7 @@ def parser() -> argparse.ArgumentParser:
     diagnose.add_argument("--run", required=True, help="screening run to diagnose")
     research = commands.add_parser("research", help="generate research cards; default: local Ollama")
     research.add_argument("--run", required=True)
-    research.add_argument("--provider", choices=["ollama", "deepseek", "demo"], default=os.getenv("FINSIGHT_PROVIDER", "ollama"))
+    research.add_argument("--provider", choices=["ollama", "deepseek", "qwen", "demo"], default=os.getenv("FINSIGHT_PROVIDER", "ollama"))
     research.add_argument("--model")
     research.add_argument("--limit", type=int, default=10)
     research.add_argument("--symbols", help="comma-separated candidate symbols; retained in screening rank order")
@@ -62,8 +62,11 @@ def parser() -> argparse.ArgumentParser:
     evaluation_source.add_argument("--review-template", metavar="SUITE_ID", help="export bound human-review CSV and original cards")
     evaluation_source.add_argument("--review", metavar="SUITE_ID", help="read human review or import --review-file CSV; no model requests")
     evaluation.add_argument("--review-file", type=Path, help="filled bound CSV; only with --review")
-    evaluation.add_argument("--models", help="comma-separated local models; omit to prepare cases only")
+    evaluation.add_argument("--models", help="local model list or one API model; omit to prepare cases only")
     evaluation.add_argument("--limit", type=int, help="number of cases per model when creating a suite; default 30")
+    evaluation.add_argument("--provider", choices=["ollama", "deepseek", "qwen"], help="default ollama; API evaluation requires an explicit API provider")
+    evaluation.add_argument("--request-limit", type=int, help="fixed API request ceiling, at most 90")
+    evaluation.add_argument("--reported-token-stop", type=int, help="stop before a new API case after this reported token total")
     backtest = commands.add_parser("backtest", help="daily ledger and comparable momentum baseline")
     backtest.add_argument("--snapshot")
     backtest.add_argument("--start", type=date.fromisoformat, default=date(2023, 1, 1))
@@ -71,7 +74,7 @@ def parser() -> argparse.ArgumentParser:
     backtest.add_argument("--capital", type=float, default=100_000)
     commands.add_parser("status", help="list snapshot quality and runs")
     usage = commands.add_parser("usage", help="recorded research tokens; no API request or platform balance lookup")
-    usage.add_argument("--provider", choices=["deepseek", "ollama", "demo", "all"], default="deepseek")
+    usage.add_argument("--provider", choices=["deepseek", "qwen", "ollama", "demo", "all"], default="deepseek")
     usage.add_argument("--model")
     journal = commands.add_parser("journal", help="manual simulation trade journal")
     journal_cmd = journal.add_subparsers(dest="journal_command", required=True)
@@ -187,6 +190,9 @@ def main(argv: list[str] | None = None) -> int:
             from finsight.evaluation_jobs import run_suite, suite_status
             if args.review_file and not args.review:
                 raise ValueError("review-file requires --review SUITE_ID")
+            if not args.run and any(value is not None for value in
+                    (args.provider, args.request_limit, args.reported_token_stop)):
+                raise ValueError("provider and API budgets are fixed when creating a suite; omit them for status/resume/review")
             if args.review or args.review_template:
                 from finsight.evaluation_review import export_packet, import_review, review_status
                 if args.models or args.limit is not None:
@@ -211,8 +217,17 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("resume retains the suite's fixed case limit")
                 output(run_suite(service.store, args.resume, models=tuple(args.models.split(",")) if args.models else ()))
             else:
-                output(evaluate_run(service.store, args.run, models=tuple(args.models.split(",")) if args.models else (),
-                                    limit=args.limit if args.limit is not None else 30))
+                if args.provider in {"deepseek", "qwen"}:
+                    from finsight.evaluation_jobs import prepare_suite
+                    prepared = prepare_suite(service.store, args.run, provider=args.provider,
+                        models=tuple(args.models.split(",")) if args.models else (), limit=args.limit if args.limit is not None else 30,
+                        request_limit=args.request_limit, reported_token_stop=args.reported_token_stop)
+                    output(run_suite(service.store, prepared["suite_id"]) if args.models else prepared)
+                else:
+                    if args.request_limit is not None or args.reported_token_stop is not None:
+                        raise ValueError("API budgets require explicit API provider")
+                    output(evaluate_run(service.store, args.run, models=tuple(args.models.split(",")) if args.models else (),
+                                        limit=args.limit if args.limit is not None else 30))
         elif args.command == "backtest":
             result = service.backtest(args.snapshot, args.start, args.end, args.capital)
             output({k: result[k] for k in ("run_id", "status", "start", "end", "synthetic") } |

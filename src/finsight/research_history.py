@@ -57,7 +57,7 @@ def saved_research(store: Store, run_id: str) -> dict:
                     payload.get("strategy_version", result.strategy_version) != result.strategy_version):
                 raise ValueError("research batch snapshot/strategy binding mismatch")
             provider = payload["provider"]
-            if provider not in {"demo", "ollama", "deepseek"}:
+            if provider not in {"demo", "ollama", "deepseek", "qwen"}:
                 raise ValueError("unknown research provider")
             cards = [ResearchCard.model_validate(card) for card in payload["cards"]]
             if len({card.symbol for card in cards}) != len(cards):

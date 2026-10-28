@@ -199,7 +199,7 @@ def completed_suites(store: Store) -> list[str]:
         try:
             state = json.loads(path.read_text())
             if state.get("status") == "completed" and state.get("models"):
-                suites.append(path.parent.name)
+                suites.append((state.get("created_at", ""), path.parent.name))
         except (OSError, ValueError):
             continue
-    return suites
+    return [suite_id for _, suite_id in sorted(suites, reverse=True)]

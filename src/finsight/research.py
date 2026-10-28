@@ -129,12 +129,20 @@ def required_risk_choices(evidence, choices):
 
 
 def research_model(provider: str, model: str | None = None) -> str:
-    if provider not in {"demo", "ollama", "deepseek"}:
-        raise ValueError("provider must be demo, ollama or deepseek")
+    if provider not in {"demo", "ollama", "deepseek", "qwen"}:
+        raise ValueError("provider must be demo, ollama, deepseek or qwen")
     if provider == "demo":
         return "offline-template"
-    return model or (os.getenv("FINSIGHT_MODEL") or "qwen3:8b" if provider == "ollama" else
-                     os.getenv("DEEPSEEK_MODEL", "deepseek-flash"))
+    if provider == "ollama":
+        return model or os.getenv("FINSIGHT_MODEL") or "qwen3:8b"
+    return model or os.getenv(provider.upper() + "_MODEL", "qwen-flash" if provider == "qwen" else "deepseek-flash")
+
+
+def api_endpoint(provider):
+    defaults = {"deepseek": "https://api.deepseek.com", "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1"}
+    if provider not in defaults:
+        raise ValueError("API provider must be deepseek or qwen")
+    return os.getenv(provider.upper() + "_BASE_URL", defaults[provider]).rstrip("/")
 
 
 class ChatAdapter:
@@ -142,16 +150,17 @@ class ChatAdapter:
 
     def __init__(self, provider: str = "ollama", model: str | None = None,
                  client: httpx.Client | None = None, base_url: str | None = None):
-        if provider not in {"ollama", "deepseek"}:
-            raise ValueError("provider must be ollama or deepseek")
+        if provider not in {"ollama", "deepseek", "qwen"}:
+            raise ValueError("provider must be ollama, deepseek or qwen")
         self.provider = provider
         self.model = research_model(provider, model)
         self.base_url = (base_url or (os.getenv("OLLAMA_HOST", "http://localhost:11434") if provider == "ollama"
-                                     else os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"))).rstrip("/")
+                                     else api_endpoint(provider))).rstrip("/")
         family = self.model.rsplit("/", 1)[-1].lower()
         self.structured_transport = "generate" if provider == "ollama" and family.startswith(("qwen3.5", "qwen3.6")) else "chat"
         self.client = client or httpx.Client(timeout=httpx.Timeout(90, connect=10), follow_redirects=False)
         self.owns_client = client is None
+        self.unreported_requests = 0
 
     def close(self):
         if self.owns_client:
@@ -204,22 +213,31 @@ class ChatAdapter:
             return {"message": {"role": "assistant", "content": message.get("content") or "", "tool_calls": calls},
                     "input_tokens": payload.get("prompt_eval_count", 0), "output_tokens": payload.get("eval_count", 0),
                     "finish_reason": payload.get("done_reason")}
-        key = os.getenv("DEEPSEEK_API_KEY")
+        key_name = self.provider.upper() + "_API_KEY"
+        key = os.getenv(key_name)
         if not key:
-            raise ValueError("DEEPSEEK_API_KEY is missing; default local provider is ollama")
-        body = dict(model=self.model, messages=messages, max_tokens=1500, temperature=0,
-                    thinking={"type": "disabled"})
+            raise ValueError(key_name + " is missing; default local provider is ollama")
+        body = dict(model=self.model, messages=messages, max_tokens=1500, temperature=0)
+        body.update({"enable_thinking": False} if self.provider == "qwen" else {"thinking": {"type": "disabled"}})
         if tools:
             body["tools"] = tools
         if final:
             body["response_format"] = {"type": "json_object"}
-        response = self.client.post(self.base_url + "/chat/completions", json=body,
-                                    headers={"Authorization": f"Bearer {key}"})
-        response.raise_for_status()
-        payload = response.json()
-        usage = payload.get("usage", {})
+        try:
+            response = self.client.post(self.base_url + "/chat/completions", json=body,
+                                        headers={"Authorization": f"Bearer {key}"})
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            self.unreported_requests += 1
+            raise
+        usage = payload.get("usage") or {}
+        if not isinstance(usage, dict) or any(not isinstance(usage.get(k), int) or isinstance(usage[k], bool) or usage[k] < 0
+                for k in ("prompt_tokens", "completion_tokens")):
+            self.unreported_requests += 1
+            usage = {}
         return {"message": payload["choices"][0]["message"], "input_tokens": usage.get("prompt_tokens", 0),
-                "output_tokens": usage.get("completion_tokens", 0)}
+                "output_tokens": usage.get("completion_tokens", 0), "finish_reason": payload["choices"][0].get("finish_reason")}
 
 
 def evidence_for(result: ScreeningResult, candidate: dict) -> dict:
@@ -530,6 +548,8 @@ def research_error_message(error: str) -> str:
     if "field/evidence mismatch" in error or "matching field" in error:
         return "模型使用的指标与证据引用不匹配，本卡未通过事实校验。"
     if "request timed out" in error or "service unavailable" in error:
+        if error.startswith(("deepseek:", "qwen:")):
+            return "模型 API 连接失败或响应超时，请检查网络与对应接口配置。"
         return "本地模型连接失败或响应超时，请检查 Ollama 是否正常运行。"
     if "price-level comparison" in error or "comparison must" in error:
         return "模型作出了缺少比较依据的价格或估值判断，本卡未通过校验。"

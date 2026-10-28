@@ -278,8 +278,8 @@ def main():
     with research_tab:
         st.subheader("有证据的中文研究卡")
         st.caption("点击生成才调用模型；刷新页面不会触发新请求。模型不会改变选股得分。")
-        provider = st.selectbox("研究模型来源", ["ollama", "demo", "deepseek"],
-                                format_func=lambda p: {"ollama": "Ollama · 本地模型", "demo": "离线模板 · 无模型调用", "deepseek": "DeepSeek · API"}[p])
+        provider = st.selectbox("研究模型来源", ["ollama", "demo", "deepseek", "qwen"],
+                                format_func=lambda p: {"ollama": "Ollama · 本地模型", "demo": "离线模板 · 无模型调用", "deepseek": "DeepSeek · API", "qwen": "Qwen · API"}[p])
         default_model = ChatAdapter(provider if provider != "demo" else "ollama")
         model = st.text_input("模型名称", value=default_model.model, disabled=provider == "demo")
         default_model.close()
@@ -309,13 +309,15 @@ def main():
                 st.error(f"{notice['failed']} 张研究卡未成功生成，其他已保存结果和选股记录保留。")
             else:
                 st.success(f"{notice['count']} 张研究卡已保存；已更新剩余生成计划。")
-        if provider == "deepseek":
-            usage = service.research_usage("deepseek", model)
+        if provider in {"deepseek", "qwen"}:
+            usage = service.research_usage(provider, model)
             st.caption(f"本项目该模型已记录：输入 {usage['input_tokens']:,} + 输出 {usage['output_tokens']:,} = {usage['reported_tokens']:,} tokens；缓存复用 {usage['cache_hits']} 次。")
             st.caption("此计数包含失败研究记录返回的用量；不包含连接测试及其他应用，不能作为平台剩余额度。")
             experiments = sum(row.get("experimental_card_records", 0) for row in usage["by_model"])
             if experiments:
-                st.caption(f"其中包含 {experiments} 张小规模测试卡的用量；测试卡不作为正式候选研究报告。")
+                st.caption(f"其中包含 {experiments} 张 API 实验或评估卡的用量；这些卡不作为正式候选研究报告。")
+            if usage["evaluation_usage_unknown_cases"] or usage["evaluation_usage_issues"]:
+                st.warning("API 评估存在用量未知或无法读取的记录；当前 token 合计不完整，不能作为平台余额。")
         history = service.saved_research(selected.run_id) if selected else {"groups": [], "rejected": []}
         if history["rejected"]:
             st.warning(f"{len(history['rejected'])} 条研究记录的结构或绑定不匹配，未自动展示。")
