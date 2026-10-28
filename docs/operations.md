@@ -51,6 +51,8 @@ The first complete mainboard snapshot enables a separate 18:15 pilot job. The ex
 
 ## Reproducible use
 
+Factor-row cache access reads keys in chunks of 400 and commits misses in one transaction. Existing per-row key formats remain compatible; mismatching/corrupt payloads are replaced from the current computed values, and input conflicts/nonfinite values are rejected before writing. Batch cache entries have a content fingerprint; legacy or damaged batches without a matching fingerprint are recomputed. This changes neither immutable source partitions nor percentile/ranking rules. `PYTHONPATH=src python scripts/benchmark_screening.py --stocks 3000 --output data/cache-benchmark.json` measures synthetic in-memory screening with SQLite operation counts; collection, snapshot reads and exports are excluded.
+
 After installing a new version or changing Python data models, stop and restart the existing Streamlit process before refreshing the browser. A browser refresh or a healthy `/_stcore/health` response does not prove that the server has reloaded its imported models. A stale process can report extra-field validation errors when opening newer snapshots. The data collector runs separately and does not need to be stopped for a UI restart. Keep dashboard output in `data/finsight/dashboard.log` when running it in the background.
 
 1. Sync a snapshot and review its quality report.

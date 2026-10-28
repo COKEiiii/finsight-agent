@@ -34,11 +34,20 @@ def screen(bundle: SnapshotBundle, config: StrategyConfig | None = None, as_of: 
         "requested_members": bundle.meta.membership_symbols}) if store else None
     raw_cached = store.factor(raw_key) if raw_key else None
     if raw_cached is not None:
+        try:
+            valid = isinstance(raw_cached.get("rows"), list) and isinstance(raw_cached.get("exclusions"), list)
+            contents = {name: raw_cached.get(name) for name in ("rows", "exclusions")}
+            if not valid or raw_cached.get("content_id") != fingerprint(contents):
+                raw_cached = None
+        except (ValueError, TypeError):
+            raw_cached = None
+    if raw_cached is not None:
         frame, exclusions = pd.DataFrame(raw_cached["rows"]), raw_cached["exclusions"]
     else:
         frame, exclusions = compute_factors(bundle, as_of, config)
         if raw_key:
-            store.factor(raw_key, {"rows": frame.to_dict("records"), "exclusions": exclusions})
+            contents = {"rows": frame.to_dict("records"), "exclusions": exclusions}
+            store.factor(raw_key, {**contents, "content_id": fingerprint(contents)})
     coverage = coverage_report(bundle, frame, exclusions)
     published = bundle.meta.publishable and (coverage['meets_threshold'] or bundle.meta.schema_version < 2)
     if not published and not preview:
@@ -46,15 +55,9 @@ def screen(bundle: SnapshotBundle, config: StrategyConfig | None = None, as_of: 
     hits = len(frame) if raw_cached is not None else 0
     if not frame.empty:
         if store and raw_cached is None:
-            rows = []
-            for row in frame.to_dict('records'):
-                key = fingerprint({'config': config.config_id, 'raw_factor_row': row})
-                cached = store.factor(key)
-                if cached:
-                    row, hits = cached, hits + 1
-                else:
-                    store.factor(key, row)
-                rows.append(row)
+            keyed_rows = [(fingerprint({'config': config.config_id, 'raw_factor_row': row}), row)
+                          for row in frame.to_dict('records')]
+            rows, hits = store.factor_rows(keyed_rows)
             frame = pd.DataFrame(rows)
         frame['score'] = 0.0
         for factor in FACTORS:

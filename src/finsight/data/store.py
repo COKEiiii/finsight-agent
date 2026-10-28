@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import pandas as pd
 
-from finsight.models import MarketSnapshot, StrategyConfig
+from finsight.models import MarketSnapshot, StrategyConfig, fingerprint
 
 TABLES = ("universe", "prices", "financials", "valuations", "calendar", "benchmark", "actions")
 
@@ -251,7 +251,50 @@ class Store:
                 db.execute("INSERT OR REPLACE INTO factor_cache VALUES (?,?)", (key, json.dumps(payload, ensure_ascii=False, allow_nan=False)))
                 return payload
             row = db.execute("SELECT payload FROM factor_cache WHERE cache_key=?", (key,)).fetchone()
-        return json.loads(row["payload"]) if row else None
+        if row:
+            try:
+                value = json.loads(row["payload"])
+                return value if isinstance(value, dict) else None
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    def factor_rows(self, keyed_rows: list[tuple[str, dict]]) -> tuple[list[dict], int]:
+        """Read compatible legacy row keys and write misses in one transaction.
+
+        Raw factors have already been computed from the frozen input. Cache
+        payloads must match those values exactly; bad entries cannot change a
+        rank. Hits count entries present before this call, not writes in it.
+        """
+        unique = {}
+        for key, row in keyed_rows:
+            encoded = json.dumps(row, ensure_ascii=False, allow_nan=False)
+            if key in unique and unique[key][0] != row:
+                raise ValueError("conflicting factor cache key")
+            unique[key] = row, encoded
+        if not unique:
+            return [], 0
+        cached, valid = {}, set()
+        keys = list(unique)
+        with self.connect() as db:
+            # Keep below older SQLite parameter limits without one query/stock.
+            for start in range(0, len(keys), 400):
+                chunk = keys[start:start + 400]
+                records = db.execute("SELECT cache_key,payload FROM factor_cache WHERE cache_key IN (" +
+                                     ",".join("?" for _ in chunk) + ")", chunk).fetchall()
+                for record in records:
+                    try:
+                        value = json.loads(record["payload"])
+                    except (ValueError, TypeError):
+                        continue
+                    expected = unique[record["cache_key"]][0]
+                    if isinstance(value, dict) and value == expected and fingerprint(value) == fingerprint(expected):
+                        cached[record["cache_key"]] = value
+                        valid.add(record["cache_key"])
+            missing = [(key, encoded) for key, (_, encoded) in unique.items() if key not in valid]
+            if missing:
+                db.executemany("INSERT OR REPLACE INTO factor_cache VALUES (?,?)", missing)
+        return [cached[key] if key in valid else row for key, row in keyed_rows], sum(key in valid for key, _ in keyed_rows)
 
     def reserve_request(self, interval: float) -> float:
         from finsight.data.rate import reserve
