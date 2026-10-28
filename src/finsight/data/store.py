@@ -104,9 +104,15 @@ class Store:
 
     @contextmanager
     def connect(self):
-        with sqlite3.connect(self.root / "finsight.sqlite", timeout=30) as db:
-            db.row_factory = sqlite3.Row
-            yield db
+        db = sqlite3.connect(self.root / "finsight.sqlite", timeout=30)
+        try:
+            with db:
+                db.row_factory = sqlite3.Row
+                yield db
+        finally:
+            # sqlite3's transaction context commits/rolls back but does not
+            # close the connection. Relying on GC exhausts launchd's FD limit.
+            db.close()
 
     def register_strategy(self, config: StrategyConfig):
         payload = json.dumps(config.model_dump(), sort_keys=True)
