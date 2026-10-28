@@ -107,6 +107,15 @@ def assisted_repair_schema(evidence: dict) -> tuple[dict, list[dict]]:
     return schema, choices
 
 
+def research_model(provider: str, model: str | None = None) -> str:
+    if provider not in {"demo", "ollama", "deepseek"}:
+        raise ValueError("provider must be demo, ollama or deepseek")
+    if provider == "demo":
+        return "offline-template"
+    return model or (os.getenv("FINSIGHT_MODEL") or "qwen3:8b" if provider == "ollama" else
+                     os.getenv("DEEPSEEK_MODEL", "deepseek-flash"))
+
+
 class ChatAdapter:
     """Provider-specific wire formats; the research workflow stays provider independent."""
 
@@ -115,8 +124,7 @@ class ChatAdapter:
         if provider not in {"ollama", "deepseek"}:
             raise ValueError("provider must be ollama or deepseek")
         self.provider = provider
-        self.model = model or (os.getenv("FINSIGHT_MODEL") or "qwen3:8b"
-                               if provider == "ollama" else os.getenv("DEEPSEEK_MODEL", "deepseek-flash"))
+        self.model = research_model(provider, model)
         self.base_url = (base_url or (os.getenv("OLLAMA_HOST", "http://localhost:11434") if provider == "ollama"
                                      else os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"))).rstrip("/")
         family = self.model.rsplit("/", 1)[-1].lower()

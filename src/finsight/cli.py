@@ -50,6 +50,9 @@ def parser() -> argparse.ArgumentParser:
     research.add_argument("--provider", choices=["ollama", "deepseek", "demo"], default=os.getenv("FINSIGHT_PROVIDER", "ollama"))
     research.add_argument("--model")
     research.add_argument("--limit", type=int, default=10)
+    research.add_argument("--symbols", help="comma-separated candidate symbols; retained in screening rank order")
+    research.add_argument("--missing-only", action="store_true", help="skip saved successful cards for the same model/prompt")
+    research.add_argument("--plan", action="store_true", help="preview selected stocks and request ceiling; no model requests")
     evaluation = commands.add_parser("evaluate", help="prepare 30 research cases or compare local Ollama models")
     evaluation_source = evaluation.add_mutually_exclusive_group(required=True)
     evaluation_source.add_argument("--run", help="screening run containing ten real candidates")
@@ -172,9 +175,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "diagnose":
             output(service.diagnose(args.run))
         elif args.command == "research":
-            cards = service.research(args.run, args.provider, args.model, args.limit)
-            output([c.model_dump(mode="json") for c in cards])
-            return 2 if any(c.status == "failed" for c in cards) else 0
+            options = {"symbols": args.symbols.split(",") if args.symbols is not None else None, "missing_only": args.missing_only}
+            if args.plan:
+                output(service.research_plan(args.run, args.provider, args.model, args.limit, **options))
+            else:
+                cards = service.research(args.run, args.provider, args.model, args.limit, **options)
+                output([c.model_dump(mode="json") for c in cards])
+                return 2 if any(c.status == "failed" for c in cards) else 0
         elif args.command == "evaluate":
             from finsight.evaluation import evaluate_run
             from finsight.evaluation_jobs import run_suite, suite_status

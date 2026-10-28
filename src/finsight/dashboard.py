@@ -284,16 +284,31 @@ def main():
         model = st.text_input("模型名称", value=default_model.model, disabled=provider == "demo")
         default_model.close()
         limit = st.number_input("本次生成股票数量", min_value=1, max_value=10, value=1)
-        if st.button("生成研究卡", disabled=selected is None or not selected.candidates):
-            with st.spinner("读取证据并生成报告…"):
-                cards = service.research(selected.run_id, provider, model, int(limit))
-            failed = sum(c.status == "failed" for c in cards)
-            if failed:
-                st.error(f"{failed} 张研究卡未成功生成，选股结果已保留。")
+        missing_only = st.checkbox("仅生成缺少的当前版本报告", value=True,
+            help="同一榜单、提供方、模型和提示词版本已有成功卡时跳过；需要重新生成时取消勾选。")
+        pending = service.research_plan(selected.run_id, provider, model, int(limit), missing_only=missing_only) if selected else None
+        if pending:
+            st.caption(f"本次待生成 {len(pending['symbols'])} 只 · 跳过已有成功卡 {len(pending['skipped_successful_symbols'])} 只 · 模型请求上限 {pending['maximum_model_requests']} 次。")
+            if not pending["symbols"]:
+                st.info("当前选择已有成功报告；可直接查看，需要重新生成时取消勾选上方选项。")
+        if st.button("生成研究卡", disabled=selected is None or not selected.candidates or not pending["symbols"]):
+            try:
+                with st.spinner("读取证据并生成报告…"):
+                    cards = service.research(selected.run_id, provider, model, int(limit), missing_only=missing_only)
+            except (ValueError, OSError) as exc:
+                st.error(f"生成未完成，已保存卡片和选股结果保留：{exc}")
             else:
-                st.success("研究卡已保存")
-            if cards:
-                st.session_state[f"report_group_{selected.run_id}"] = report_group(provider, cards[0].model, cards[0].prompt_version)
+                st.session_state["research_notice"] = {"screen_run_id": selected.run_id, "count": len(cards),
+                    "failed": sum(card.status == "failed" for card in cards)}
+                if cards:
+                    st.session_state[f"report_group_{selected.run_id}"] = report_group(provider, cards[0].model, cards[0].prompt_version)
+                st.rerun()
+        notice = st.session_state.pop("research_notice", None)
+        if notice and selected and notice["screen_run_id"] == selected.run_id:
+            if notice["failed"]:
+                st.error(f"{notice['failed']} 张研究卡未成功生成，其他已保存结果和选股记录保留。")
+            else:
+                st.success(f"{notice['count']} 张研究卡已保存；已更新剩余生成计划。")
         if provider == "deepseek":
             usage = service.research_usage("deepseek", model)
             st.caption(f"本项目该模型已记录：输入 {usage['input_tokens']:,} + 输出 {usage['output_tokens']:,} = {usage['reported_tokens']:,} tokens；缓存复用 {usage['cache_hits']} 次。")
@@ -325,7 +340,7 @@ def main():
                             st.code(card.error, language=None)
                     st.caption(f"模型请求 {card.llm_calls} · 工具执行 {card.tool_calls} · 缓存 {'命中' if card.cache_hit else '未命中'}")
                     st.caption(f"本次记录 tokens：输入 {card.input_tokens:,} · 输出 {card.output_tokens:,}")
-                    st.caption(f"保存批次：{entry['research_run_id']} · 保存时间（UTC）：{entry['created_at']}")
+                    st.caption(f"保存记录：{entry['research_run_id']} · 保存时间（UTC）：{entry['created_at']}")
                     if entry["previous_completed"]:
                         with st.expander("上一次成功卡（历史，最新生成仍为失败）"):
                             st.markdown(render_card(ResearchCard.model_validate(entry["previous_completed"]["card"])))

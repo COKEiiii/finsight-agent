@@ -65,7 +65,7 @@ def saved_research(store: Store, run_id: str) -> dict:
                 "snapshot_id": result.snapshot_id, "as_of": str(result.as_of), "timestamp_timezone": "UTC",
                 "strategy_version": result.strategy_version, "config_id": result.config_id})
             entry = {"card": card.model_dump(mode="json"), "research_run_id": record["run_id"],
-                "created_at": record["created_at"], "previous_completed": None}
+                "batch_id": payload.get("batch_id"), "created_at": record["created_at"], "previous_completed": None}
             latest = group["cards"].get(card.symbol)
             if latest is None:
                 group["cards"][card.symbol] = entry

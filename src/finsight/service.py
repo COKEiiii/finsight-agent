@@ -13,7 +13,6 @@ from finsight.data.quality import audit, missing_sessions
 from finsight.data.store import Store, code_version
 from finsight.models import ResearchCard, ScreeningResult, StrategyConfig
 from finsight.portfolio import journal_template, portfolio_plan, reconcile
-from finsight.research import ChatAdapter, render_card, research_candidate
 from finsight.screening import screen
 
 
@@ -225,31 +224,13 @@ class FinSight:
         return diagnose_run(self.store, run_id)
 
     def research(self, run_id: str, provider: str = "ollama", model: str | None = None,
-                 limit: int = 10, adapter=None) -> list[ResearchCard]:
-        if limit < 1 or limit > 100:
-            raise ValueError("research limit must be in 1..100")
-        record = self.store.run(run_id)
-        if record["kind"] != "screen":
-            raise ValueError("research requires a screening run")
-        result = ScreeningResult.model_validate(record["payload"])
-        own_adapter = provider != "demo" and adapter is None
-        if own_adapter:
-            adapter = ChatAdapter(provider, model)
-        try:
-            cards = [research_candidate(result, c, self.store, adapter, demo=provider == "demo")
-                     for c in result.candidates[:limit]]
-        finally:
-            if own_adapter:
-                adapter.close()
-        payload = {"screen_run_id": run_id, "provider": provider, "model": cards[0].model if cards else None,
-                   "strategy_version": result.strategy_version, "config_id": result.config_id,
-                   "cards": [c.model_dump(mode="json") for c in cards],
-                   "code_version": code_version()}
-        research_id = self.store.save_run("research", result.snapshot_id, StrategyConfig.model_validate(record["config"]), payload)
-        folder = self.store.artifact_dir(research_id)
-        (folder / "research.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        (folder / "research.md").write_text("# FinSight 研究卡\n\n" + "\n\n---\n\n".join(render_card(c) for c in cards), encoding="utf-8")
-        return cards
+                 limit: int = 10, adapter=None, *, symbols=None, missing_only=False) -> list[ResearchCard]:
+        from finsight.research_batches import run_research
+        return run_research(self.store, run_id, provider, model, limit, adapter, symbols=symbols, missing_only=missing_only)
+
+    def research_plan(self, run_id: str, provider="ollama", model=None, limit=10, *, symbols=None, missing_only=False) -> dict:
+        from finsight.research_batches import research_plan
+        return research_plan(self.store, run_id, provider, model, limit, symbols=symbols, missing_only=missing_only)
 
     def saved_research(self, run_id: str) -> dict:
         from finsight.research_history import saved_research
