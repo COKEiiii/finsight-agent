@@ -63,6 +63,13 @@ class Jobs:
             raise ValueError("unknown collection job")
         result = dict(row)
         result["config"], result["progress"] = json.loads(result["config"]), json.loads(result["progress"])
+        active = result["status"] in {"queued", "running", "cancelling"}
+        result["process_alive"] = active and self.alive(result["pid"])
+        # Preserve the stored state for compatibility. Read-side observation
+        # detects a dead coordinator even if SQLite was unavailable when it died.
+        result["interrupted"] = active and not result["process_alive"] and (
+            result["status"] != "queued" or result["pid"] is not None)
+        result["observed_status"] = "interrupted" if result["interrupted"] else result["status"]
         with self.store.connect() as db:
             requests = db.execute("SELECT count(*) AS total,sum(status='done') AS completed,sum(status='failed') AS failed,"
                 "sum(attempts) AS network_attempts,sum(cache_hit) AS cache_hits,sum(bytes) AS serialized_bytes,"

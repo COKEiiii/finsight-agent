@@ -31,6 +31,8 @@ Collection after a missed day downloads available historical bars but cannot rec
 
 ## Mainboard jobs and recovery
 
+Collection jobs expose `observed_status`, `process_alive` and `interrupted` separately from the stored `status`. A missing coordinator is displayed as interrupted even if a database outage prevented it from recording failure. Observation is read-only; it does not silently restart workers or change the signal cutoff. Interrupted elapsed time ends at the last stored update, not an invented exit time. Verify the original PID has gone before explicitly resuming its checkpoints. A database-open failure must be diagnosed separately; correcting the status display does not establish its underlying cause.
+
 Start with `sync --provider akshare --universe mainboard --limit 100 --background`, then validate 500 stocks before a complete initialization. Use `jobs list`, `jobs show JOB_ID` and `jobs resume JOB_ID` to inspect and resume the same durable job. Successful raw responses retain their original observation time. Resume retries failed requests and reuses successful checkpoints; a new trading date creates a new snapshot with an explicit universe definition and member hash.
 
 A finalized snapshot blocked because its first stock-state observations came after the cutoff cannot be repaired by replaying the same checkpoints. Its recovery action is a new incremental collection after a new session completes. Creating that job reuses the saved data bottom-up. Source failures and interrupted jobs retain normal checkpoint recovery. A partial snapshot with no failed source requests also requires a fresh incremental check instead of a pointless replay.
@@ -96,6 +98,8 @@ DeepSeek-compatible platforms can be selected with `DEEPSEEK_BASE_URL`, `DEEPSEE
 Human verification questions such as asking whether valuation is reasonable are checked as questions, while unsupported conclusions remain rejected. Explicit statements that strategy rank does not represent market capitalization are not treated as invented market-cap data. Price-versus-average checks stop at clause boundaries and a new average subject, so a positive price trend followed by a comparison of two averages is not misread as a closing-price comparison.
 
 ## Local thirty-case model comparison
+
+`evaluate --audit SUITE_ID` revalidates an ended suite offline into a separate audit run. The original checkpoint, benchmark scores and manual-review CSV are preserved byte-for-byte. Bindings and stored facts (including dates, units and provenance) must match the frozen cases. Original failed responses that now validate remain original failures in the baseline; the audit reports their recoverability separately. The versioned rubric recognizes report-specific “过时” wording, explicit missing-ROE disclosure, and observed negative growth in risks rather than only reasons or hypothetical future conditions. It does not contact Ollama or certify human quality acceptance.
 
 `evaluate --run SCREEN_RUN_ID` prepares ten actual candidates and twenty explicitly modified cases without model calls. Add `--models qwen3.5:4b,qwen3:8b` to execute sequentially, or later use `evaluate --resume SUITE_ID --models ...`. `evaluate --status SUITE_ID` reads checkpoints without contacting Ollama. New suites can use `--limit N` for partial probes; resume preserves the original limit and model order. Old cases-only exports remain readable as files but need a new suite for the durable protocol.
 

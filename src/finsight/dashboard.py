@@ -66,8 +66,10 @@ def main():
                 latest_published is not None and item["snapshot_id"] == latest_published.snapshot_id,
                 item["config"].get("mainboard", False), item["created_at"]), reverse=True)
             by_job = {job["job_id"]: job for job in recent}
+            job_labels = {"interrupted": "已中断", "running": "采集中", "queued": "等待启动", "completed": "已完成",
+                          "partial": "待完善", "failed": "失败", "cancelled": "已取消", "cancelling": "正在取消"}
             job_id = st.selectbox("采集任务", list(by_job), key="job_choice",
-                format_func=lambda identifier: f"{by_job[identifier]['status']} · {by_job[identifier]['config']['universe_id'][:12]} · {identifier[:8]}")
+                format_func=lambda identifier: f"{job_labels.get(by_job[identifier].get('observed_status', by_job[identifier]['status']), by_job[identifier]['status'])} · {by_job[identifier]['config']['universe_id'][:12]} · {identifier[:8]}")
             job = by_job[job_id]
             progress, requests = job["progress"], job["requests"]
             elapsed = elapsed_seconds(job)
@@ -85,7 +87,7 @@ def main():
                 st.caption(f"覆盖率 {coverage.get('coverage', 0):.2%} · {progress.get('publication_status', '预览')}")
             if job["error"]:
                 st.error(job["error"])
-            interrupted = job["status"] in {"queued", "running", "cancelling"} and not jobs.alive(job["pid"])
+            interrupted = job.get("interrupted", job["status"] in {"running", "cancelling"} and not jobs.alive(job["pid"]))
             if interrupted:
                 st.warning("采集进程已停止，成功请求保留在本地，可恢复该任务。")
             if recovery.get("message"):

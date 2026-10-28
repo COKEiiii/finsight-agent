@@ -58,14 +58,19 @@ def term_matches(text: str, term: str):
 
 
 def check_comparison(text: str, *, verification: bool = False):
-    if (COMPARISON.search(text) or BENCHMARK_COMPARISON.search(text)) and not UNCERTAIN.search(text):
-        if verification:
-            clauses = re.split(r"[。；;，,]", text)
-            comparisons = [clause for clause in clauses if COMPARISON.search(clause) or BENCHMARK_COMPARISON.search(clause)]
-            if comparisons and all(re.search(r"核实|核对|检查|确认|验证|评估|判断", clause) and
-                                   ("是否" in clause or "合理性" in clause) for clause in comparisons):
-                return
-        raise ValueError(f"unsupported valuation or industry comparison must say 无法判断: {text[:120]}")
+    verify_scope = False
+    for clause in re.split(r"[。；;，,]", text):
+        own_verb = bool(re.search(r"核实|核对|检查|确认|验证|评估|判断", clause))
+        connected = bool(re.match(r"\s*(?:以及|并|同时|及)", clause))
+        comparison = COMPARISON.search(clause) or BENCHMARK_COMPARISON.search(clause)
+        if comparison and not UNCERTAIN.search(clause):
+            own_question = own_verb and ("是否" in clause or "合理性" in clause)
+            shared_question = verify_scope and connected and "是否" in clause
+            if not verification or not (own_question or shared_question):
+                raise ValueError(f"unsupported valuation or industry comparison must say 无法判断: {text[:120]}")
+        # A disclaimer about missing news cannot excuse an assertion elsewhere;
+        # shared verification verbs apply only to explicitly connected questions.
+        verify_scope = own_verb or (verify_scope and connected)
 
 
 def check_unprovided_metrics(text: str):

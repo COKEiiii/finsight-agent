@@ -12,7 +12,7 @@ TERMINAL = {"completed", "partial", "failed", "cancelled"}
 
 
 def elapsed_seconds(job: dict, now: datetime | None = None) -> float:
-    end = datetime.fromisoformat(job.get("progress", {}).get("finished_at") or job["updated_at"]) if job["status"] in TERMINAL else (
+    end = datetime.fromisoformat(job.get("progress", {}).get("finished_at") or job["updated_at"]) if job["status"] in TERMINAL or job.get("interrupted") else (
         now or datetime.now(ZoneInfo("Asia/Shanghai")))
     return max(0., (end - datetime.fromisoformat(job["created_at"])).total_seconds())
 
@@ -22,6 +22,9 @@ def recovery_status(store: Store, job: dict) -> dict:
               "action": "resume", "reason": None, "next_session": None, "earliest_capture_at": None}
     if job["status"] == "completed":
         return {**result, "can_resume": False, "action": "none"}
+    if job.get("interrupted"):
+        return {**result, "can_resume": True, "reason": "coordinator_exited",
+                "message": "采集进程已退出，成功请求仍保存在本地。可恢复原任务；当前中断历时截至最后记录，退出时刻未知。"}
     if job["status"] not in {"partial", "failed", "cancelled"} or not job.get("snapshot_id"):
         return result
     snapshot = store.load_snapshot(job["snapshot_id"], table_names=())
@@ -70,7 +73,8 @@ def request_profile(store: Store, job_id: str) -> list[dict]:
 
 
 def build_report(store: Store, job: dict, now: datetime | None = None) -> dict:
-    report = {"job_id": job["job_id"], "status": job["status"], "snapshot_id": job["snapshot_id"],
+    report = {"job_id": job["job_id"], "status": job.get("observed_status", job["status"]),
+        "stored_status": job["status"], "process_alive": job.get("process_alive"), "snapshot_id": job["snapshot_id"],
         "report_code_version": code_version(),
         "strategy_version": job["config"].get("strategy", {}).get("version"),
         "created_at": job["created_at"], "updated_at": job["updated_at"],

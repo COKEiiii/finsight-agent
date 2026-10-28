@@ -53,6 +53,7 @@ def parser() -> argparse.ArgumentParser:
     evaluation_source.add_argument("--run", help="screening run containing ten real candidates")
     evaluation_source.add_argument("--resume", metavar="SUITE_ID", help="resume saved local evaluation checkpoints")
     evaluation_source.add_argument("--status", metavar="SUITE_ID", help="read saved progress without calling a model")
+    evaluation_source.add_argument("--audit", metavar="SUITE_ID", help="offline revalidation of saved responses; no model requests")
     evaluation.add_argument("--models", help="comma-separated local models; omit to prepare cases only")
     evaluation.add_argument("--limit", type=int, help="number of cases per model when creating a suite; default 30")
     backtest = commands.add_parser("backtest", help="daily ledger and comparable momentum baseline")
@@ -170,7 +171,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "evaluate":
             from finsight.evaluation import evaluate_run
             from finsight.evaluation_jobs import run_suite, suite_status
-            if args.status:
+            if args.audit:
+                from finsight.evaluation_audit import audit_suite
+                if args.models or args.limit is not None:
+                    raise ValueError("offline audit cannot change evaluation models or limit")
+                output(audit_suite(service.store, args.audit))
+            elif args.status:
                 if args.models or args.limit is not None:
                     raise ValueError("status cannot change evaluation models or limit")
                 output(suite_status(service.store, args.status))
@@ -190,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             from finsight.scheduler import rollout_status
             output({"snapshots": [s.model_dump(mode="json") for s in service.store.snapshots()],
                     "mainboard_rollout": rollout_status(service.store),
-                    "collection_jobs": [{key: job[key] for key in ("job_id", "status", "snapshot_id", "error")}
+                    "collection_jobs": [{key: job[key] for key in ("job_id", "status", "observed_status", "process_alive", "snapshot_id", "error")}
                                         for job in Jobs(service.store).list()[:10]],
                     "runs": [{k: row[k] for k in ("run_id", "kind", "snapshot_id", "created_at")} for row in service.store.runs()]})
         elif args.command == "usage":

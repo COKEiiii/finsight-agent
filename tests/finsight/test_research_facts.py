@@ -320,7 +320,9 @@ def test_repair_reports_all_unsupported_comparisons_in_one_request(tmp_path):
     assert validate_content(payload, facts)
 
 
-@pytest.mark.parametrize("check", ["结合行业与同业数据人工判断估值是否合理。", "核实市盈率和市净率的合理性。"])
+@pytest.mark.parametrize("check", ["结合行业与同业数据人工判断估值是否合理。", "核实市盈率和市净率的合理性。",
+    "需核实营收负增长是否由业务变化引起，以及估值合理性是否需进一步比较。",
+    "需核实营收增长是否可持续，以及市盈率和市净率是否合理。"])
 def test_human_verification_questions_are_not_unsupported_conclusions(tmp_path, check):
     _, _, candidate, facts = ready(tmp_path)
     payload = demo_content(candidate, facts).model_dump()
@@ -331,10 +333,21 @@ def test_human_verification_questions_are_not_unsupported_conclusions(tmp_path, 
         validate_content(payload, facts)
 
 
-def test_assertion_in_a_check_is_not_legalized_by_a_following_question(tmp_path):
+@pytest.mark.parametrize("text", ["估值合理，请核实是否存在其他风险。", "核实营收是否增长，以及市盈率合理。",
+    "核实营收是否增长。市盈率合理。", "核实营收是否增长，以及估值合理性已经得到证明。"])
+def test_assertion_in_a_check_is_not_legalized_by_a_following_question(tmp_path, text):
     _, _, candidate, facts = ready(tmp_path)
     payload = demo_content(candidate, facts).model_dump()
-    payload["human_checks"] = ["估值合理，请核实是否存在其他风险。"]
+    payload["human_checks"] = [text]
+    with pytest.raises(ValueError, match="comparison"):
+        validate_content(payload, facts)
+
+
+@pytest.mark.parametrize("text", ["未提供新闻，估值合理。", "无法判断最新事件，市盈率明显低估。"])
+def test_unrelated_missing_data_disclaimer_cannot_excuse_a_valuation_assertion(tmp_path, text):
+    _, _, candidate, facts = ready(tmp_path)
+    payload = demo_content(candidate, facts).model_dump()
+    payload["human_checks"] = [text]
     with pytest.raises(ValueError, match="comparison"):
         validate_content(payload, facts)
 

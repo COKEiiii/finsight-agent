@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -20,6 +21,54 @@ from finsight.jobs import Jobs
 from finsight.service import FinSight
 
 ZONE = ZoneInfo("Asia/Shanghai")
+
+
+def test_dead_coordinator_is_observed_as_interrupted_without_rewriting_storage(tmp_path, monkeypatch):
+    service = FinSight(tmp_path)
+    jobs = Jobs(service.store)
+    job = jobs.create({"case": "lost-database-at-exit"})
+    jobs.update(job["job_id"], status="running", pid=999999999,
+                progress={"symbols_completed": 734, "symbols_total": 3194})
+    with service.store.connect() as db:
+        db.execute("UPDATE jobs SET created_at=?,updated_at=? WHERE job_id=?",
+            ("2025-03-03T09:00:00+08:00", "2025-03-03T09:30:00+08:00", job["job_id"]))
+    monkeypatch.setattr(Jobs, "alive", staticmethod(lambda pid: False))
+    observed = jobs.get(job["job_id"])
+    assert observed["status"] == "running" and observed["observed_status"] == "interrupted"
+    assert observed["interrupted"] and not observed["process_alive"]
+    assert elapsed_seconds(observed, datetime(2025,3,4,20,tzinfo=ZONE)) == 1800
+    report = service.collection_report(job["job_id"])
+    assert report["status"] == "interrupted" and report["stored_status"] == "running"
+    assert report["recovery"]["can_resume"] and report["recovery"]["reason"] == "coordinator_exited"
+    assert jobs.resume(job["job_id"])["observed_status"] == "queued"
+    assert jobs.get(job["job_id"])["progress"]["symbols_completed"] == 734
+
+
+def test_live_coordinator_and_unstarted_queue_are_not_restarted(store):
+    jobs = Jobs(store)
+    job = jobs.create({"case": "queued"})
+    assert job["observed_status"] == "queued" and not job["interrupted"]
+    jobs.update(job["job_id"], status="running", pid=os.getpid())
+    observed = jobs.get(job["job_id"])
+    assert observed["observed_status"] == "running" and observed["process_alive"]
+    assert jobs.resume(job["job_id"])["pid"] == os.getpid()
+    jobs.update(job["job_id"], pid=None)
+    assert jobs.get(job["job_id"])["observed_status"] == "interrupted"
+
+
+def test_dashboard_labels_a_dead_job_as_interrupted(tmp_path, monkeypatch):
+    monkeypatch.setenv("FINSIGHT_DATA_DIR", str(tmp_path))
+    service = FinSight(tmp_path)
+    service.sync("demo", date(2025,2,28), date(2024,1,2))
+    jobs = Jobs(service.store)
+    job = jobs.create({"universe_id": "fixture-universe", "as_of": "2025-02-28"})
+    jobs.update(job["job_id"], status="running", pid=999999999)
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[2] / "src/finsight/dashboard.py"), default_timeout=30).run()
+    assert not app.exception
+    choices = next(box for box in app.selectbox if box.label == "采集任务").options
+    assert any("已中断" in label for label in choices)
+    assert any("采集进程已停止" in warning.value for warning in app.warning)
+    assert jobs.get(job["job_id"])["status"] == "running"
 
 
 def finalized_before_cutoff(service, bundle):
