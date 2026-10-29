@@ -111,6 +111,10 @@ def reconcile(store: Store, bundle: SnapshotBundle, initial_cash: float, account
               actual_cash: float | None = None, actual_holdings: dict[str, int] | None = None,
               config: StrategyConfig | None = None, *, entries: list[TradeJournalEntry] | None = None) -> dict:
     config = config or StrategyConfig()
+    from finsight.account_inputs import actual_holdings as normalize_holdings
+    from finsight.account_inputs import validate_actual_cash
+    actual_cash = validate_actual_cash(actual_cash)
+    actual_holdings = normalize_holdings(actual_holdings)
     if not math.isfinite(initial_cash) or initial_cash <= 0:
         raise ValueError("initial cash must be positive and finite")
     from finsight.backtest import Ledger
@@ -184,6 +188,8 @@ def reconcile(store: Store, bundle: SnapshotBundle, initial_cash: float, account
             "synthetic": bundle.meta.synthetic, "research_eligible": bundle.meta.research_eligible, "cash": ledger.cash,
             "receivables": ledger.receivables, "nav": nav, "holdings": holdings, "weights": weights,
             "industry_weights": dict(industry_weights), "return": nav / initial_cash - 1,
+            "holding_industries": industry_names,
+            "holding_quote_dates": {s: str(marks.loc[marks["symbol"] == s, "trade_date"].iloc[0]) for s in holdings},
             "actual_cash_difference": None if actual_cash is None else actual_cash - ledger.cash,
             "actual_holdings_difference": difference, "flags": flags,
             "unexecuted_events": sum(e.status not in {"filled", "partial"} for e in events),

@@ -12,7 +12,7 @@ from finsight.data.demo import make_demo
 from finsight.data.quality import audit, missing_sessions
 from finsight.data.store import Store, code_version
 from finsight.models import ResearchCard, ScreeningResult, StrategyConfig
-from finsight.portfolio import journal_template, portfolio_plan, reconcile
+from finsight.portfolio import journal_entries, journal_template, portfolio_plan, reconcile
 from finsight.screening import screen
 
 
@@ -332,11 +332,31 @@ class FinSight:
 
     def portfolio_report(self, snapshot_id: str | None = None, capital: float = 100_000,
                          account: str = "paper", actual_cash: float | None = None,
-                         actual_holdings: dict[str, int] | None = None) -> dict:
+                         actual_holdings: dict[str, int] | None = None, *, actual_as_of: date | None = None,
+                         review_notes: dict[str, str] | None = None, reviewer: str | None = None) -> dict:
         bundle = self.store.load_snapshot(snapshot_id)
+        from finsight.account_inputs import actual_holdings as normalize_holdings
         from finsight.journal_review import render_weekly_review
-        payload = reconcile(self.store, bundle, capital, account, actual_cash, actual_holdings, self.config)
-        payload.update(snapshot_id=bundle.meta.snapshot_id, code_version=code_version())
+        from finsight.models import fingerprint
+        from finsight.weekly_review import build_weekly_review
+        if actual_as_of is not None and str(actual_as_of) != str(bundle.meta.as_of):
+            raise ValueError("actual account date must match the selected snapshot cutoff")
+        actual_holdings = normalize_holdings(actual_holdings)
+        entries = journal_entries(self.store, account)
+        payload = reconcile(self.store, bundle, capital, account, actual_cash, actual_holdings, self.config, entries=entries)
+        payload.update(snapshot_id=bundle.meta.snapshot_id, code_version=code_version(),
+            generated_at=datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+            monitor_config_id=self.config.config_id, strategy_config=self.config.model_dump(),
+            snapshot_hashes=dict(bundle.meta.table_hashes),
+            journal_fingerprint=fingerprint([entry.model_dump(mode="json") for entry in entries]),
+            journal_event_ids=[entry.event_id for entry in entries],
+            visible_event_ids=[entry.event_id for entry in entries if entry.trade_date <= bundle.meta.as_of],
+            account_comparison={"as_of": str(actual_as_of) if actual_as_of else None, "cash": actual_cash,
+                "holdings": actual_holdings, "source": "user_supplied" if actual_cash is not None or actual_holdings is not None else "not_provided"})
+        payload["weekly_review"] = build_weekly_review(self.store, bundle, self.config, payload, entries,
+            notes=review_notes, reviewer=reviewer)
+        payload.update(portfolio_review_version="portfolio_review_v2_classified",
+            weekly_review_fingerprint=fingerprint(payload["weekly_review"]))
         run_id = self.store.save_run("portfolio_report", bundle.meta.snapshot_id, self.config, payload)
         payload["run_id"] = run_id
         folder = self.store.artifact_dir(run_id)
@@ -345,6 +365,10 @@ class FinSight:
         pd.DataFrame(payload["execution_review"]["orders"]).to_csv(folder / "orders.csv", index=False, encoding="utf-8-sig")
         pd.DataFrame(payload["executions"]).to_csv(folder / "executions.csv", index=False, encoding="utf-8-sig")
         (folder / "weekly_review.md").write_text(render_weekly_review(payload), encoding="utf-8")
+        pd.DataFrame([{**row, "evidence": json.dumps(row["evidence"], ensure_ascii=False, sort_keys=True),
+            "account_id": account, "snapshot_id": bundle.meta.snapshot_id, "as_of": payload["as_of"],
+            "monitor_config_id": self.config.config_id, "journal_fingerprint": payload["journal_fingerprint"]}
+            for row in payload["weekly_review"]["findings"]]).to_csv(folder / "weekly_findings.csv", index=False, encoding="utf-8-sig")
         return payload
 
     def rebalance(self, screen_run_id: str, capital: float = 100_000, account: str = "paper") -> dict:

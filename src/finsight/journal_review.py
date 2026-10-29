@@ -133,4 +133,7 @@ def render_weekly_review(report: dict) -> str:
         if order["flags"]:
             lines.append(f"- {order['trade_date']} {order['symbol']} {order['order_id'] or order['standalone_event_id']}: {', '.join(order['flags'])}")
     lines += ["", *[f"- {note}" for note in execution["notes"]]]
+    if report.get("weekly_review"):
+        from finsight.weekly_review import render_findings
+        lines.append(render_findings(report["weekly_review"]))
     return "\n".join(lines)

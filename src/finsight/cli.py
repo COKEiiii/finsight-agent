@@ -100,6 +100,9 @@ def parser() -> argparse.ArgumentParser:
     report.add_argument("--capital", type=float, required=True)
     report.add_argument("--actual-cash", type=float)
     report.add_argument("--actual-holdings", type=Path, help="JSON object of symbol -> shares")
+    report.add_argument("--actual-as-of", type=date.fromisoformat, help="account comparison date; must match snapshot cutoff")
+    report.add_argument("--review-notes", type=Path, help="JSON text notes keyed by strategy/data/execution/manual")
+    report.add_argument("--reviewer", help="person recording the optional review notes")
     watch = commands.add_parser("watch", help="run after 18:00 China time; market history catch-up, no fabricated snapshots")
     watch.add_argument("--once", action="store_true", help="check once and exit; suitable for launchd/cron")
     watch.add_argument("--universe", choices=["sample", "mainboard"], default="sample")
@@ -281,7 +284,9 @@ def main(argv: list[str] | None = None) -> int:
                 return 2 if plan["status"] in {"blocked", "requires_review"} else 0
             else:
                 actual = json.loads(args.actual_holdings.read_text()) if args.actual_holdings else None
-                output(service.portfolio_report(args.snapshot, args.capital, args.account, args.actual_cash, actual))
+                notes = json.loads(args.review_notes.read_text()) if args.review_notes else None
+                output(service.portfolio_report(args.snapshot, args.capital, args.account, args.actual_cash, actual,
+                    actual_as_of=args.actual_as_of, review_notes=notes, reviewer=args.reviewer))
         elif args.command == "watch":
             import time
             if args.poll_seconds < 10:

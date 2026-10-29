@@ -13,17 +13,19 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
+from finsight.account_inputs import holdings_csv
 from finsight.collection_status import elapsed_seconds, recovery_status
 from finsight.cost_sensitivity import render_costs
 from finsight.data.quality import audit
 from finsight.evaluation_review import completed_suites, import_review, review_packet, review_status
 from finsight.jobs import Jobs
-from finsight.models import ScreeningResult, StrategyConfig, TradeJournalEntry
+from finsight.models import ScreeningResult, StrategyConfig, TradeJournalEntry, fingerprint
 from finsight.observations import TIMING_LABELS, observations_csv, render_observations
 from finsight.portfolio import import_journal, journal_entries, portfolio_plan
 from finsight.research import FIELD_PROMPT_VERSION, ChatAdapter, render_card
 from finsight.research_history import report_group
 from finsight.service import FinSight
+from finsight.weekly_review import LABELS, STATUSES, latest_report
 
 
 def main():
@@ -553,19 +555,74 @@ def main():
             st.dataframe(pd.DataFrame([e.model_dump(mode="json") for e in events]), hide_index=True)
             st.download_button("导出日志 CSV", pd.DataFrame([e.model_dump(mode="json") for e in events]).to_csv(index=False).encode("utf-8-sig"),
                                file_name="journal.csv", mime="text/csv")
-        if st.button("生成持仓与周度检查报告"):
+        st.download_button("下载持仓核对空模板", "symbol,quantity\n".encode("utf-8-sig"), file_name="actual_holdings.csv")
+        with st.form("weekly_review_input"):
+            st.caption("账户核对数据可选，请填写与快照截止日一致的收盘后数据。现金按已成交资金变动核对，未成交委托冻结资金需另行确认。未上传持仓不表示空仓；这些输入不会写入成交日志。")
+            actual_cash_input = st.number_input("实际现金核对（元，可选）", min_value=0., value=None, placeholder="未提供时保持未知")
+            actual_date = st.date_input("账户数据截至日", value=bundle.meta.as_of)
+            holdings_upload = st.file_uploader("完整持仓核对 CSV（symbol,quantity）", type=["csv"])
+            empty_holdings = st.checkbox("确认账户无股票持仓", value=False)
+            reviewer = st.text_input("复盘记录人（填写笔记时必填）")
+            notes = {category: st.text_area(label + "复盘笔记（可选）") for category, label in LABELS.items()}
+            review_submitted = st.form_submit_button("生成持仓与周度检查报告")
+        if review_submitted:
             try:
-                report = service.portfolio_report(snapshot_id, capital, account)
-                review = report["execution_review"]
-                st.write(f"截至快照待处理委托 {review['open_order_count']} 笔 · 最近五个交易日成交事件 {review['fill_events']} 笔 · 实际费用 {review['transaction_cost']:.2f} 元")
-                if review["orders"]:
-                    st.dataframe(pd.DataFrame(review["orders"]), hide_index=True)
-                st.json(report)
-                if report["performance"]["curve"]:
-                    st.line_chart(pd.DataFrame(report["performance"]["curve"]).set_index("trade_date")[["nav"]])
-                st.download_button("下载检查报告", json.dumps(report, ensure_ascii=False, indent=2), file_name="portfolio_review.json")
-            except ValueError as exc:
+                if holdings_upload and empty_holdings:
+                    raise ValueError("持仓文件与空仓确认不能同时使用，请保留实际适用的一项。")
+                actual = holdings_csv(holdings_upload.getvalue().decode("utf-8-sig")) if holdings_upload else {} if empty_holdings else None
+                service.portfolio_report(snapshot_id, capital, account, actual_cash_input, actual,
+                    actual_as_of=actual_date if actual_cash_input is not None or actual is not None else None,
+                    review_notes=notes, reviewer=reviewer)
+                st.success("周度检查与复盘记录已保存；原始成交日志未改动。")
+            except (ValueError, UnicodeError, OSError) as exc:
                 st.error(str(exc))
+        try:
+            report = latest_report(service.store, snapshot_id, account, service.config)
+        except ValueError as exc:
+            st.error("无法验证已保存周报：" + str(exc))
+            report = None
+        if report:
+            st.caption(f"已保存周报：{report['run_id']} · 截止 {report['as_of']} · 账户 {report['account_id']} · 原起始资金 {report['initial_cash']:,.2f} 元")
+            current_journal = fingerprint([entry.model_dump(mode="json") for entry in events])
+            if report.get("journal_fingerprint") and report["journal_fingerprint"] != current_journal:
+                st.warning("日志已有更新，当前周报保留生成时的输入；请按需重新生成。页面刷新不会自动改写报告。")
+            review = report["execution_review"]
+            st.write(f"截至快照待处理委托 {review['open_order_count']} 笔 · 最近五个交易日成交事件 {review['fill_events']} 笔 · 实际费用 {review['transaction_cost']:.2f} 元")
+            if review["orders"]:
+                st.dataframe(pd.DataFrame(review["orders"]), hide_index=True)
+            if "weekly_review" in report:
+                classified = report["weekly_review"]
+                st.write("四类复盘检查")
+                summary = pd.DataFrame(classified["groups"])[["label", "attention_count", "pending_count"]]
+                st.dataframe(summary.rename(columns={"label": "类别", "attention_count": "待核实", "pending_count": "缺少证据"}), hide_index=True)
+                if classified["status"] == "awaiting_first_execution":
+                    st.info("尚无实际模拟成交记录，策略执行表现待观察；账户输入核对不等于已完成交易演练。")
+                for category, label in LABELS.items():
+                    with st.expander(label + "复盘检查"):
+                        for finding in classified["findings"]:
+                            if finding["category"] == category:
+                                st.write(f"{STATUSES[finding['status']]} · {finding['summary']}")
+                                st.json(finding["evidence"])
+                                st.caption("下一步：" + finding["next_step"])
+                        note = classified["manual_review"]["notes"].get(category)
+                        st.text("人工笔记：" + (note or "尚未填写。"))
+                st.caption("笔记填写人：" + (classified["manual_review"]["reviewer"] or "尚未填写；不会自动标为已复盘。"))
+                st.json({"账户核对数据截至日": report["account_comparison"]["as_of"],
+                    "实际现金差异": report["actual_cash_difference"], "实际持仓差异": report["actual_holdings_difference"]})
+                from finsight.journal_review import render_weekly_review
+                st.download_button("下载四类复盘 Markdown", render_weekly_review(report), file_name="weekly_review.md")
+                rows = [{**row, "evidence": json.dumps(row["evidence"], ensure_ascii=False),
+                         "snapshot_id": snapshot_id, "account_id": account, "monitor_config_id": service.config.config_id,
+                         "as_of": report["as_of"], "journal_fingerprint": report["journal_fingerprint"]}
+                        for row in classified["findings"]]
+                st.download_button("下载四类检查 CSV", pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig"), file_name="weekly_findings.csv")
+            else:
+                st.info("此为旧版周报，尚无四类复盘记录；按需重新生成，旧记录会保留。")
+            with st.expander("周报完整诊断"):
+                st.json(report)
+            if report["performance"]["curve"]:
+                st.line_chart(pd.DataFrame(report["performance"]["curve"]).set_index("trade_date")[["nav"]])
+            st.download_button("下载检查报告", json.dumps(report, ensure_ascii=False, indent=2), file_name="portfolio_review.json")
 
 
 if __name__ == "__main__":

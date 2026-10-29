@@ -58,6 +58,11 @@ def _identity(result):
         "candidates": result.candidates, "exclusions": result.exclusions})
 
 
+def signal_identity(result):
+    """Semantic identity shared by read-only review and idempotent capture."""
+    return _identity(result)
+
+
 def _sealed(store, row):
     value = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
     if not isinstance(value, dict) or row["kind"] != "signal_seal" or value.get("protocol") != PROTOCOL:
