@@ -141,6 +141,14 @@ class FinSight:
                         with self.store.connect() as db:
                             db.execute("INSERT OR REPLACE INTO publications VALUES (?,?,?,?,?)", (bundle.meta.universe_id,
                                 str(bundle.meta.as_of), bundle.meta.snapshot_id, result.run_id, quality["coverage"]["coverage"]))
+                        try:
+                            observation = self.observe_signal(result.run_id)
+                            quality["signal_observation"] = {"status": "recorded", "seal_run_id": observation["seal_run_id"],
+                                "timing_status": observation["timing_status"], "recorded_at": observation["recorded_at"]}
+                        except Exception as exc:
+                            # The published data remains available; capture can be retried without downloading it again.
+                            quality["signal_observation"] = {"status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+                        jobs.update(job_id, progress={"signal_observation": quality["signal_observation"]})
                     if api is None:
                         from finsight.scheduler import update_collection_rollout
                         try:
@@ -222,6 +230,15 @@ class FinSight:
     def diagnose(self, run_id: str) -> dict:
         from finsight.diagnostics import diagnose_run
         return diagnose_run(self.store, run_id)
+
+    def observe_signal(self, run_id: str) -> dict:
+        from finsight.observations import seal_signal
+        return seal_signal(self.store, run_id)
+
+    def observations_report(self, start: date | None = None, end: date | None = None, *, export=False) -> dict:
+        from finsight.observations import export_report, observation_report
+        report = observation_report(self.store, self.config, start, end)
+        return export_report(self.store, self.config, report) if export else report
 
     def research(self, run_id: str, provider: str = "ollama", model: str | None = None,
                  limit: int = 10, adapter=None, *, symbols=None, missing_only=False) -> list[ResearchCard]:

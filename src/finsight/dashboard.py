@@ -18,6 +18,7 @@ from finsight.data.quality import audit
 from finsight.evaluation_review import completed_suites, import_review, review_packet, review_status
 from finsight.jobs import Jobs
 from finsight.models import ScreeningResult, StrategyConfig, TradeJournalEntry
+from finsight.observations import TIMING_LABELS, observations_csv, render_observations
 from finsight.portfolio import import_journal, journal_entries, portfolio_plan
 from finsight.research import FIELD_PROMPT_VERSION, ChatAdapter, render_card
 from finsight.research_history import report_group
@@ -399,6 +400,32 @@ def main():
                     st.error(str(exc))
     with portfolio_tab:
         st.subheader("模拟组合与研究表现")
+        with st.expander("前瞻信号观察"):
+            st.caption("下一交易日北京时间 09:15 前固定信号；晚发布、晚记录和未知交易日历单列。此处记录信号与参考目标权重，账户成交另看交易日志。")
+            eligible_observation = bool(selected and selected.publication_status == "published" and not selected.synthetic and bundle.meta.universe_complete)
+            if st.button("固定当前榜单信号", disabled=not eligible_observation):
+                try:
+                    observation = service.observe_signal(selected.run_id)
+                    st.success(f"信号已保存 · {TIMING_LABELS[observation['timing_status']]} · 原记录时间 {observation['recorded_at']}")
+                except (ValueError, OSError) as exc:
+                    st.error(str(exc))
+            observed = service.observations_report()
+            st.write(f"已记录 {observed['observed_sessions']} 个交易日 · 截点前固定 {observed['prospective_sessions']} 个")
+            if observed["timeline"]:
+                columns = {"signal_date": "信号日期", "timing_status": "时间状态", "recorded_at": "记录时间",
+                    "research_deadline": "研究截点", "prospective_eligible": "截点前固定", "rebalance_due": "月末调仓日",
+                    "target_turnover_reference": "参考目标权重差异", "revisions": "同日修订数"}
+                table = pd.DataFrame(observed["timeline"])[list(columns)]
+                table["timing_status"] = table["timing_status"].map(TIMING_LABELS)
+                st.dataframe(table.rename(columns=columns), hide_index=True)
+                st.download_button("下载观察记录 JSON", json.dumps(observed, ensure_ascii=False, indent=2), file_name="observations.json")
+                st.download_button("下载观察记录 CSV", observations_csv(observed).encode("utf-8"), file_name="observations.csv")
+                st.download_button("下载观察记录 Markdown", render_observations(observed), file_name="observations.md")
+            else:
+                st.info("正式全主板榜单发布后自动记录；也可手动固定当前榜单。记录时间不会回填到信号日。")
+            if observed["rejected"]:
+                st.warning(f"{len(observed['rejected'])} 条记录无法验证，未计入观察统计。")
+                st.json(observed["rejected"])
         capital = st.number_input("初始模拟资金（元）", min_value=1000.0, value=100000.0, step=10000.0)
         if selected:
             plan = portfolio_plan(selected, service.config, capital, bundle["calendar"])

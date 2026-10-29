@@ -84,6 +84,7 @@ def build_report(store: Store, job: dict, now: datetime | None = None) -> dict:
         "symbols_total": job["progress"].get("symbols_total", 0),
         "processing_complete": job["progress"].get("phase") == "done" and bool(job["snapshot_id"]),
         "requests": job["requests"], "methods": request_profile(store, job["job_id"]),
+        "signal_observation": job["progress"].get("signal_observation"),
         "recovery": recovery_status(store, job),
         "publication": None, "local_tables": {}, "rollout": None,
         "measurement_notes": [
@@ -120,6 +121,9 @@ def render_report(report: dict) -> str:
         f"快照：{report['snapshot_id'] or '尚未保存'}", f"发布状态：{publication.get('status', '尚未评估')}"]
     if report["recovery"].get("message"):
         lines.append(report["recovery"]["message"])
+    if report.get("signal_observation"):
+        observation = report["signal_observation"]
+        lines.append("信号记录：" + observation["status"] + " · " + observation.get("timing_status", observation.get("error", "")))
     lines += ["", "## 本地数据", "| 数据表 | 记录数 |", "|---|---:|"]
     lines += [f"| {name} | {count} |" for name, count in report["local_tables"].items()]
     lines += ["", "## 请求性能", "| 接口 | 请求记录 | 网络请求 | 累计秒 | HTTP 字节 | 返回行数 |", "|---|---:|---:|---:|---:|---:|"]

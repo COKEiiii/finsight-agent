@@ -76,6 +76,13 @@ def parser() -> argparse.ArgumentParser:
     usage = commands.add_parser("usage", help="recorded research tokens; no API request or platform balance lookup")
     usage.add_argument("--provider", choices=["deepseek", "qwen", "ollama", "demo", "all"], default="deepseek")
     usage.add_argument("--model")
+    observations = commands.add_parser("observations", help="seal published mainboard signals and inspect prospective timing; no model or orders")
+    observation_commands = observations.add_subparsers(dest="observation_command", required=True)
+    capture = observation_commands.add_parser("capture")
+    capture.add_argument("--run", required=True, help="published full-mainboard screening run")
+    observation_report = observation_commands.add_parser("report")
+    observation_report.add_argument("--start", type=date.fromisoformat)
+    observation_report.add_argument("--end", type=date.fromisoformat)
     journal = commands.add_parser("journal", help="manual simulation trade journal")
     journal_cmd = journal.add_subparsers(dest="journal_command", required=True)
     imp = journal_cmd.add_parser("import")
@@ -130,7 +137,18 @@ def check_daily(service: FinSight, universe: str, now: datetime | None = None) -
     saved = [s for s in service.store.snapshots() if s.source == "akshare" and
              (s.universe_id == uid or not s.universe_id and s.universe_scope == scope)]
     if any(s.as_of == day and s.publishable for s in saved):
-        return {"status": "up_to_date", "as_of": str(day)}
+        ready = {"status": "up_to_date", "as_of": str(day)}
+        if universe == "mainboard":
+            with service.store.connect() as db:
+                publication = db.execute("SELECT screen_run_id FROM publications WHERE universe_id=? AND trade_date=?", (uid, str(day))).fetchone()
+            if publication:
+                try:
+                    observation = service.observe_signal(publication[0])
+                    ready["signal_observation"] = {"status": "recorded", "seal_run_id": observation["seal_run_id"],
+                        "timing_status": observation["timing_status"]}
+                except Exception as exc:
+                    ready["signal_observation"] = {"status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+        return ready
     failed = next((s for s in saved if s.as_of == day), None)
     if failed and any("no stock state known at cutoff" in issue for issue in failed.quality_issues):
         future = calendar.loc[(calendar["trade_date"] > str(day)) &
@@ -242,6 +260,12 @@ def main(argv: list[str] | None = None) -> int:
                     "runs": [{k: row[k] for k in ("run_id", "kind", "snapshot_id", "created_at")} for row in service.store.runs()]})
         elif args.command == "usage":
             output(service.research_usage(args.provider, args.model))
+        elif args.command == "observations":
+            if args.observation_command == "capture":
+                output(service.observe_signal(args.run))
+            else:
+                report = service.observations_report(args.start, args.end, export=True)
+                output({key:value for key,value in report.items() if key != "timeline"})
         elif args.command == "journal":
             if args.journal_command == "import":
                 output(import_journal(service.store, args.path.read_text(encoding="utf-8-sig")))
