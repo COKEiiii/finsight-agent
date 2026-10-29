@@ -1,0 +1,186 @@
+{
+  "protocol": "annual_roe_document_review_v1",
+  "reviewed_at": "2026-10-29T07:20:39.285045+00:00",
+  "snapshot_under_review": "akshare-2026-10-28-f79c0772f9",
+  "observation_only": true,
+  "automatically_applied_to_snapshots": false,
+  "human_evaluation_completed": false,
+  "notes": [
+    "页码从 PDF 第一页起按 1 计数；已视觉核对相应列标题、表格及脚注。",
+    "非数值披露、未计算和接口空值不构成零值，不改变冻结策略或覆盖率分类。",
+    "抓取与文档核查时间为本次实际时间；历史当时可得性仍未通过，不推定修订时间或唯一原始版本。"
+  ],
+  "documents": [
+    {
+      "symbol": "000656.SZ",
+      "name": "金科股份",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-04-28/1225221241.PDF",
+      "selected_pages_one_based": [
+        2
+      ],
+      "sha256": "61181ecd5541adc4012d494bffb5e1df78dea855d4deb98a41a52b4d10de1244",
+      "bytes": 130910,
+      "fetched_at": "2026-10-29T07:16:05.879457+00:00",
+      "review_method": "Codex visual PDF table and footnote review",
+      "field": "weighted_annual_roe",
+      "unit": "percent",
+      "report_period": "2025-12-31",
+      "finding": "not_applicable",
+      "explanation": "2025 年列为不适用。",
+      "numeric_value": null,
+      "usable_as_strategy_factor": false,
+      "historical_available_on": null,
+      "source_url_date": "2026-04-28"
+    },
+    {
+      "symbol": "000890.SZ",
+      "name": "法尔胜",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-04-23/1225147036.PDF",
+      "selected_pages_one_based": [
+        161
+      ],
+      "sha256": "ec17b7aee38930aa3f55bfa6cacd43dd279e691c51f30249551f66e00c5b68cd",
+      "bytes": 3118822,
+      "fetched_at": "2026-10-29T07:16:09.663695+00:00",
+      "review_method": "Codex visual PDF table and footnote review",
+      "field": "weighted_annual_roe",
+      "unit": "percent",
+      "report_period": "2025-12-31",
+      "finding": "not_calculated_despite_zero_display",
+      "explanation": "表格显示 0.00%，但脚注明确因加权平均净资产为负而未计算；不能作为数值零。",
+      "numeric_value": null,
+      "usable_as_strategy_factor": false,
+      "historical_available_on": null,
+      "source_url_date": "2026-04-23"
+    },
+    {
+      "symbol": "000972.SZ",
+      "name": "中基健康",
+      "url": "https://disc.static.szse.cn/disc/disk03/finalpage/2026-06-26/e6cce5eb-05c3-451b-966c-916e71a13545.PDF",
+      "selected_pages_one_based": [
+        7
+      ],
+      "sha256": "63049b916127fb68336c55b4414d5e902fc99f8e84eb111325621b3f949d15b4",
+      "bytes": 1170671,
+      "fetched_at": "2026-10-29T07:16:12.138550+00:00",
+      "review_method": "Codex visual PDF table and footnote review",
+      "field": "weighted_annual_roe",
+      "unit": "percent",
+      "report_period": "2025-12-31",
+      "finding": "not_applicable",
+      "explanation": "2025 年列为不适用；URL 日期与正文封面、接口公告日期不同，版本及更正关系待核实。",
+      "numeric_value": null,
+      "usable_as_strategy_factor": false,
+      "historical_available_on": null,
+      "source_url_date": "2026-06-26"
+    },
+    {
+      "symbol": "002513.SZ",
+      "name": "蓝丰生化",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-04-18/1225118983.PDF",
+      "selected_pages_one_based": [
+        187
+      ],
+      "sha256": "19ab60247c3647d259d2ef01f08f4a3edd419668a89d1a8e7ae46f1ac7361c28",
+      "bytes": 1309806,
+      "fetched_at": "2026-10-29T07:16:12.916131+00:00",
+      "review_method": "Codex visual PDF table and footnote review",
+      "field": "weighted_annual_roe",
+      "unit": "percent",
+      "report_period": "2025-12-31",
+      "finding": "not_applicable",
+      "explanation": "表格指向注 1；脚注说明本年度亏损且加权平均净资产为负，指标不适用。",
+      "numeric_value": null,
+      "usable_as_strategy_factor": false,
+      "historical_available_on": null,
+      "source_url_date": "2026-04-18"
+    },
+    {
+      "symbol": "002647.SZ",
+      "name": "仁东控股",
+      "url": "https://disc.static.szse.cn/download/disc/disk03/finalpage/2026-02-28/a183682a-f0ba-4a0c-bbfd-9dd7eaf188b4.PDF",
+      "selected_pages_one_based": [
+        4
+      ],
+      "sha256": "f6fd2735d3990ea723b06db454c2f0100a54473ad75284cc718a6f07ac8ca91f",
+      "bytes": 246972,
+      "fetched_at": "2026-10-29T07:16:13.704151+00:00",
+      "review_method": "Codex visual PDF table and footnote review",
+      "field": "weighted_annual_roe",
+      "unit": "percent",
+      "report_period": "2025-12-31",
+      "finding": "not_applicable",
+      "explanation": "2025 年列为不适用。",
+      "numeric_value": null,
+      "usable_as_strategy_factor": false,
+      "historical_available_on": null,
+      "source_url_date": "2026-02-28"
+    },
+    {
+      "symbol": "600165.SH",
+      "name": "宁科生物",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-04-24/1225172307.PDF",
+      "selected_pages_one_based": [
+        6,
+        7
+      ],
+      "sha256": "7ed69b96137119b38ee31730d6123895567adf99535aef19e2c5bc266f88c057",
+      "bytes": 1440856,
+      "fetched_at": "2026-10-29T07:16:14.977385+00:00",
+      "review_method": "Codex visual PDF table and footnote review",
+      "field": "weighted_annual_roe",
+      "unit": "percent",
+      "report_period": "2025-12-31",
+      "finding": "no_numeric_value_disclosed",
+      "explanation": "2025 年列为斜线；列标题在 PDF 第 6 页，数据在第 7 页。",
+      "numeric_value": null,
+      "usable_as_strategy_factor": false,
+      "historical_available_on": null,
+      "source_url_date": "2026-04-24"
+    },
+    {
+      "symbol": "600322.SH",
+      "name": "津投城开",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-04-30/1225263729.PDF",
+      "selected_pages_one_based": [
+        7,
+        207
+      ],
+      "sha256": "51a8282d7b506a54358d82d7ace47dd33bc32cf7d3ce5d723c79bd67ff8fdf22",
+      "bytes": 1455433,
+      "fetched_at": "2026-10-29T07:16:16.322930+00:00",
+      "review_method": "Codex visual PDF table and footnote review",
+      "field": "weighted_annual_roe",
+      "unit": "percent",
+      "report_period": "2025-12-31",
+      "finding": "not_applicable",
+      "explanation": "2025 年列为不适用；附注说明亏损且加权平均净资产为负，指标不适用。",
+      "numeric_value": null,
+      "usable_as_strategy_factor": false,
+      "historical_available_on": null,
+      "source_url_date": "2026-04-30"
+    },
+    {
+      "symbol": "600683.SH",
+      "name": "京投发展",
+      "url": "https://static.cninfo.com.cn/finalpage/2026-04-21/1225133722.PDF",
+      "selected_pages_one_based": [
+        7,
+        237
+      ],
+      "sha256": "5ae3b3772161e13b4c487d2f068094fff5fc344dbfe281da104d3fcf521a022b",
+      "bytes": 1601239,
+      "fetched_at": "2026-10-29T07:16:17.411959+00:00",
+      "review_method": "Codex visual PDF table and footnote review",
+      "field": "weighted_annual_roe",
+      "unit": "percent",
+      "report_period": "2025-12-31",
+      "finding": "no_numeric_value_disclosed",
+      "explanation": "2025 年列为斜线。",
+      "numeric_value": null,
+      "usable_as_strategy_factor": false,
+      "historical_available_on": null,
+      "source_url_date": "2026-04-21"
+    }
+  ]
+}

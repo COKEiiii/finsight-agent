@@ -176,6 +176,9 @@ class RequestBroker:
                 self.condition.wait_for(lambda: self.active < self.limit)
                 self.active += 1
             started = time.perf_counter()
+            # A received response still costs a request and bytes even when
+            # empty or rejected during local validation/serialization.
+            http_bytes, network_requests = 0, 0
             try:
                 self.jobs.check_cancelled(self.job_id)
                 timeout = max(self.timeout, 120) if method in {"stock_yjbb_em", "stock_info_sh_name_code",
@@ -231,8 +234,8 @@ class RequestBroker:
                 last_detail = exc.detail if isinstance(exc, RequestFailure) else type(exc).__name__
                 self._record(key, method, kwargs, "failed", attempts=1, elapsed=time.perf_counter() - started,
                              error_kind=failure, loaded_at=self.clock().isoformat(),
-                             http_bytes=exc.http_bytes if isinstance(exc, RequestFailure) else 0,
-                             network_requests=exc.network_requests if isinstance(exc, RequestFailure) else 0,
+                             http_bytes=max(http_bytes, exc.http_bytes if isinstance(exc, RequestFailure) else 0),
+                             network_requests=max(network_requests, exc.network_requests if isinstance(exc, RequestFailure) else 0),
                              error_detail=exc.detail if isinstance(exc, RequestFailure) else type(exc).__name__)
                 with self.condition:
                     self.failure_streak += 1

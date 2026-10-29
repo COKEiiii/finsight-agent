@@ -92,7 +92,8 @@ def build_report(store: Store, job: dict, now: datetime | None = None) -> dict:
             "任务历时在任务结束后固定；最近一次运行耗时不含此前暂停及重试间隔。",
             "累计请求耗时含重试、限流等待及序列化，并发时间可重叠，不能代替任务历时。",
             "HTTP 字节不包含未计量的 BaoStock TCP 字节；返回行数为空表示旧记录未计量。",
-            "缓存命中统计最近一次读取方式，实际网络请求数单独累计，包含重试和分页。"]}
+            "缓存命中统计最近一次读取方式，实际网络请求数单独累计，包含重试和分页。",
+            "空响应及本地校验失败也累计已观测的网络请求与响应字节；旧版漏记值不推算回填。"]}
     if job["snapshot_id"]:
         bundle = store.load_snapshot(job["snapshot_id"], table_names=())
         quality_path = store.root / "snapshots" / job["snapshot_id"] / "quality.json"
