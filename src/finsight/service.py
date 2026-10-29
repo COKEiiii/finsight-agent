@@ -273,6 +273,25 @@ class FinSight:
             "\n".join("- " + s for s in payload["assumptions"]), encoding="utf-8")
         return payload
 
+    def cost_sensitivity(self, snapshot_id: str | None = None, start: date = date(2023, 1, 1),
+                         end: date = date(2024, 12, 31), capital: float = 100_000) -> dict:
+        from finsight.cost_sensitivity import compare_costs, export_costs
+        if start > end:
+            raise ValueError("invalid cost sensitivity interval")
+        meta = self.store.load_snapshot(snapshot_id, table_names=("calendar",))
+        quality_file = self.store.root / "snapshots" / meta.meta.snapshot_id / "quality.json"
+        quality = json.loads(quality_file.read_text()) if quality_file.exists() else {}
+        if quality.get("config_id") != self.config.config_id:
+            original = self.store.load_snapshot(meta.meta.snapshot_id)
+            audit(original, self.config)
+            meta.meta = original.meta
+        sessions = sorted(meta["calendar"]["trade_date"].astype(str))
+        first = next((i for i, day in enumerate(sessions) if day >= str(start)), len(sessions))
+        lower = sessions[max(0, first - 61)] if sessions else str(start)
+        bundle = self.store.load_snapshot(meta.meta.snapshot_id, date_range=(lower, str(end)))
+        bundle.meta = meta.meta
+        return export_costs(self.store, self.config, compare_costs(bundle, self.config, start, end, capital))
+
     def research_usage(self, provider: str = "deepseek", model: str | None = None) -> dict:
         from finsight.evaluation_jobs import api_usage_records
 

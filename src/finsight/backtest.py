@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date
 
 import numpy as np
@@ -106,19 +106,38 @@ FEE_RULES = [
 ]
 
 
-def trading_cost(day: str, action: str, gross: float) -> float:
+@dataclass(frozen=True)
+class Commission:
+    rate: float = .0003
+    minimum: float = 5.0
+
+    def __post_init__(self):
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+               for v in (self.rate, self.minimum)) or not 0 <= self.rate < 1 or self.minimum < 0:
+            raise ValueError("commission rate/minimum must be finite and nonnegative; rate must be below one")
+
+
+DEFAULT_COMMISSION = Commission()
+EXECUTION_VERSION = "daily_execution_v0.2_fee_aware_caps"
+
+
+def trading_cost(day: str, action: str, gross: float, *, commission: Commission = DEFAULT_COMMISSION) -> float:
     # Research assumptions. Commission includes brokerage/exchange handling charges.
-    commission = max(5.0, gross * .0003)
+    if action not in {"buy", "sell"} or not math.isfinite(gross) or gross < 0:
+        raise ValueError("invalid trading cost action or gross notional")
+    brokerage = max(commission.minimum, gross * commission.rate)
     rule = next((rule for rule in reversed(FEE_RULES) if rule["effective_on"] <= day), None)
     if rule is None:
         raise ValueError("cost schedule has no coverage before 2022")
     transfer = gross * rule["transfer_rate"]
     stamp = gross * rule["sell_stamp_rate"] if action == "sell" else 0
-    return round(commission + transfer + stamp, 2)
+    return round(brokerage + transfer + stamp, 2)
 
 
 def execute_order(ledger: Ledger, symbol: str, action: str, quantity: int, bar: dict | None,
-                  day: str, slippage_bps: float = 5) -> dict:
+                  day: str, slippage_bps: float = 5, *, commission: Commission = DEFAULT_COMMISSION) -> dict:
+    if action not in {"buy", "sell"} or not math.isfinite(slippage_bps) or not 0 <= slippage_bps < 10_000:
+        raise ValueError("invalid execution action or slippage assumption")
     event = {"trade_date": day, "symbol": symbol, "action": action, "quantity": quantity,
              "status": "cancelled", "reason": "", "executed_price": None, "transaction_cost": 0.0}
     if bar is None or bool(bar.get("suspended", True)) or not (float(bar.get("volume", 0)) > 0):
@@ -139,7 +158,7 @@ def execute_order(ledger: Ledger, symbol: str, action: str, quantity: int, bar: 
     if price <= 0 or (action == "buy" and price > limit) or (action == "sell" and price < limit):
         event["reason"] = "slippage_crosses_price_limit"
         return event
-    cost = trading_cost(day, action, quantity * price)
+    cost = trading_cost(day, action, quantity * price, commission=commission)
     try:
         ledger.record_fill(symbol, action, quantity, price, cost, day)
     except ValueError as exc:
@@ -162,11 +181,12 @@ def metrics(values: list[float], initial_cash: float, costs: float, turnover: fl
 
 
 def simulate(bundle: SnapshotBundle, config: StrategyConfig, start: date, end: date,
-             capital: float = 100_000, baseline: bool = False, slippage_bps: float = 5) -> dict:
+             capital: float = 100_000, baseline: bool = False, slippage_bps: float = 5, *,
+             commission: Commission = DEFAULT_COMMISSION) -> dict:
     if start > end or end > bundle.meta.as_of:
         raise ValueError("invalid backtest interval or end exceeds snapshot cutoff")
-    if not math.isfinite(slippage_bps) or slippage_bps < 0:
-        raise ValueError("slippage must be nonnegative and finite")
+    if not math.isfinite(slippage_bps) or not 0 <= slippage_bps < 10_000:
+        raise ValueError("slippage must be finite, nonnegative and below 10000 bps")
     if not bundle.meta.publishable:
         raise ValueError("snapshot failed batch validation")
     all_days = sorted(bundle["calendar"]["trade_date"].astype(str))
@@ -174,13 +194,22 @@ def simulate(bundle: SnapshotBundle, config: StrategyConfig, start: date, end: d
     if not days:
         raise ValueError("no sessions in backtest interval")
     positions = {d: i for i, d in enumerate(all_days)}
-    bars = {d: frame.set_index("symbol").to_dict("index") for d, frame in bundle["prices"].groupby("trade_date")}
+    first_index = positions[days[0]]
+    # Factor warm-up remains in bundle; only execution days and the prior close
+    # need Python quote dictionaries for the daily ledger.
+    bar_start = all_days[max(0, first_index - 1)]
+    execution_prices = bundle["prices"].loc[bundle["prices"]["trade_date"].between(bar_start, days[-1])]
+    bars = {d: frame.set_index("symbol").to_dict("index") for d, frame in execution_prices.groupby("trade_date")}
     ledger, marks, curve, trades, signals, issues = Ledger(capital), {}, [], [], [], []
     pending: list[dict] = []
+    pending_industries: dict[str, str] = {}
     total_cost, turnover = 0.0, 0.0
 
     def build_orders(signal_day: str, nav: float):
+        nonlocal pending_industries
         result = screen(bundle, config, date.fromisoformat(signal_day), baseline=baseline, preview=True)
+        states = bundle["universe"].loc[bundle["universe"]["known_on"] <= signal_day]
+        pending_industries = states.sort_values("known_on").drop_duplicates("symbol", keep="last").set_index("symbol")["industry"].to_dict()
         targets = select_targets(result.candidates, config)
         weights = {row["symbol"]: row for row in targets}
         orders = []
@@ -195,7 +224,6 @@ def simulate(bundle: SnapshotBundle, config: StrategyConfig, start: date, end: d
                         "eligible_count": result.eligible_count, "publication_status": result.publication_status, "orders": orders})
         return orders
 
-    first_index = positions[days[0]]
     if first_index:
         previous_day = all_days[first_index - 1]
         for symbol, bar in bars.get(previous_day, {}).items():
@@ -217,21 +245,43 @@ def simulate(bundle: SnapshotBundle, config: StrategyConfig, start: date, end: d
             if order["action"] == "buy" and symbol in daily:
                 opening = float(daily[symbol]["open"])
                 nav = ledger.nav(opening_marks)
-                single_room = nav * config.max_stock_weight - ledger.quantity(symbol) * opening
                 equity = sum(ledger.quantity(s) * opening_marks[s] for s in ledger.symbols)
-                total_room = nav * config.max_equity_weight - equity
-                cap = max(0, math.floor(min(single_room, total_room) / (opening * (1 + slippage_bps / 10000)) / 100) * 100)
-                order = {**order, "quantity": min(order["quantity"], cap)}
-                while order["quantity"] > 0:
-                    price = math.ceil(opening * (1 + slippage_bps / 10000) * 100 - 1e-8) / 100
-                    if order["quantity"] * price + trading_cost(day, "buy", order["quantity"] * price) <= ledger.cash:
-                        break
-                    order["quantity"] -= 100
+                price = math.ceil(opening * (1 + slippage_bps / 10000) * 100 - 1e-8) / 100
+                names = ledger.symbols | {symbol}
+                industries = [pending_industries.get(s) for s in names]
+                valid_industries = all(isinstance(i, str) and i.strip() and i.strip().lower() not in {"unknown", "未知"}
+                                       for i in industries)
+
+                def affordable(quantity):
+                    fee = trading_cost(day, "buy", quantity * price, commission=commission)
+                    after_nav = nav - fee - quantity * (price - opening)
+                    return (after_nav > 0 and quantity * price + fee <= ledger.cash + 1e-8 and
+                        (ledger.quantity(symbol) + quantity) * opening <= config.max_stock_weight * after_nav + 1e-8 and
+                        equity + quantity * opening <= config.max_equity_weight * after_nav + 1e-8 and
+                        len(names) <= config.max_holdings and valid_industries and
+                        sum(i.strip() == pending_industries[symbol].strip() for i in industries) <= config.max_industry_names)
+
+                lower, upper = 0, order["quantity"] // 100
+                while lower < upper:
+                    middle = (lower + upper + 1) // 2
+                    if affordable(middle * 100):
+                        lower = middle
+                    else:
+                        upper = middle - 1
+                order = {**order, "quantity": lower * 100}
                 if order["quantity"] == 0:
-                    event = {**order, "trade_date": day, "status": "cancelled", "reason": "cash_or_exposure_cap",
+                    reason = "cash_or_exposure_cap"
+                    if not valid_industries:
+                        reason = "unverified_industry_at_signal"
+                        issues.append(f"{day}:{symbol}: industry unavailable at signal; buy cancelled")
+                    elif len(names) > config.max_holdings or sum(
+                            i.strip() == pending_industries[symbol].strip() for i in industries) > config.max_industry_names:
+                        reason = "holding_or_industry_cap"
+                    event = {**order, "trade_date": day, "status": "cancelled", "reason": reason,
                              "executed_price": None, "transaction_cost": 0.0}
             if event is None:
-                event = execute_order(ledger, **order, bar=daily.get(symbol), day=day, slippage_bps=slippage_bps)
+                event = execute_order(ledger, **order, bar=daily.get(symbol), day=day, slippage_bps=slippage_bps,
+                                      commission=commission)
             trades.append(event)
             total_cost += event["transaction_cost"]
             if event["status"] == "filled":
@@ -258,13 +308,15 @@ def simulate(bundle: SnapshotBundle, config: StrategyConfig, start: date, end: d
     stats = metrics([r["nav"] for r in curve], capital, total_cost, turnover)
     return {"curve": curve, "trades": trades, "signals": signals, "metrics": stats,
             "issues": sorted(set(issues)), "initial_capital": capital,
-            "slippage_bps": slippage_bps, "name": "momentum_baseline" if baseline else config.version}
+            "execution_version": EXECUTION_VERSION, "slippage_bps": slippage_bps, "commission": asdict(commission),
+            "name": "momentum_baseline" if baseline else config.version}
 
 
 def run_backtest(bundle: SnapshotBundle, config: StrategyConfig, start: date, end: date,
-                 capital: float = 100_000) -> dict:
-    strategy = simulate(bundle, config, start, end, capital)
-    baseline = simulate(bundle, config, start, end, capital, baseline=True)
+                 capital: float = 100_000, *, slippage_bps: float = 5,
+                 commission: Commission = DEFAULT_COMMISSION) -> dict:
+    strategy = simulate(bundle, config, start, end, capital, slippage_bps=slippage_bps, commission=commission)
+    baseline = simulate(bundle, config, start, end, capital, baseline=True, slippage_bps=slippage_bps, commission=commission)
     benchmark = bundle["benchmark"].set_index("trade_date")["close"].sort_index()
     first = strategy["curve"][0]["trade_date"]
     prior = benchmark[benchmark.index < first]
@@ -276,23 +328,30 @@ def run_backtest(bundle: SnapshotBundle, config: StrategyConfig, start: date, en
         comparison.append({"trade_date": day, "benchmark_nav": capital * value if value else None,
                            "benchmark_80_20_nav": capital * (.2 + .8 * value) if value else None})
     final_bm = comparison[-1]["benchmark_nav"]
+    price_days = set(bundle["prices"]["trade_date"].astype(str))
+    data_gaps = {"missing_price_sessions": [point["trade_date"] for point in strategy["curve"] if point["trade_date"] not in price_days],
+        "missing_benchmark_sessions": [point["trade_date"] for point in comparison if point["benchmark_nav"] is None]}
     strategy["metrics"]["excess_return_vs_hs300_price"] = (
         strategy["metrics"]["cumulative_return"] - (final_bm / capital - 1) if final_bm else None)
     passed = bundle.meta.research_eligible and not strategy["issues"] and not baseline["issues"] and all(
         p["benchmark_nav"] is not None for p in comparison)
-    if any(t["reason"] == "unverified_price_limit" for r in (strategy, baseline) for t in r["trades"]):
+    if any(t["reason"] in {"unverified_price_limit", "unverified_industry_at_signal"}
+           for r in (strategy, baseline) for t in r["trades"]):
         passed = False
     if any(s["publication_status"] != "published" for r in (strategy, baseline) for s in r["signals"]):
+        passed = False
+    if data_gaps["missing_price_sessions"]:
         passed = False
     return {"snapshot_id": bundle.meta.snapshot_id, "start": str(start), "end": str(end),
             "research_eligible": passed, "synthetic": bundle.meta.synthetic,
             "status": "historical_checks_passed" if passed else "研究演示：历史验证未通过",
             "strategy": strategy, "momentum_baseline": baseline, "benchmark": comparison,
-            "cost_model": {"commission_rate": .0003, "minimum_commission": 5,
-                           "slippage_bps": 5, "effective_date_rules": FEE_RULES},
+            "input_quality": data_gaps,
+            "cost_model": {"commission_rate": commission.rate, "minimum_commission": commission.minimum,
+                           "slippage_bps": slippage_bps, "effective_date_rules": [dict(rule) for rule in FEE_RULES]},
             "assumptions": ["日频开盘成交近似，不代表真实订单簿成交；未知涨跌停价不成交。",
                 "分红按税前现金及给定支付日记账；不模拟个人红利税。配股等未知公司行动阻断正式验证。",
                 "沪深300为价格指数，不含分红；同时展示80%指数与20%现金的持有对照。",
                 "动量基线使用同一准入股票池、组合约束、执行与费用。",
-                "佣金双边万三最低5元，过户费与卖出印花税按生效日期配置；滑点双边5bp。",
+                f"佣金双边费率 {commission.rate:.6f}、每笔最低 {commission.minimum:g} 元；过户费与卖出印花税按生效日期配置；单边滑点 {slippage_bps:g}bp。",
                 "2023–2024开发；2025独立验证。短样本年化指标不作为策略有效性的证明。"]}

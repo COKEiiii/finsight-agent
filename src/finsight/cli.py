@@ -72,6 +72,7 @@ def parser() -> argparse.ArgumentParser:
     backtest.add_argument("--start", type=date.fromisoformat, default=date(2023, 1, 1))
     backtest.add_argument("--end", type=date.fromisoformat, default=date(2024, 12, 31))
     backtest.add_argument("--capital", type=float, default=100_000)
+    backtest.add_argument("--cost-sensitivity", action="store_true", help="six fixed commission/slippage scenarios, same strategy and momentum baseline; no model")
     commands.add_parser("status", help="list snapshot quality and runs")
     usage = commands.add_parser("usage", help="recorded research tokens; no API request or platform balance lookup")
     usage.add_argument("--provider", choices=["deepseek", "qwen", "ollama", "demo", "all"], default="deepseek")
@@ -247,9 +248,12 @@ def main(argv: list[str] | None = None) -> int:
                     output(evaluate_run(service.store, args.run, models=tuple(args.models.split(",")) if args.models else (),
                                         limit=args.limit if args.limit is not None else 30))
         elif args.command == "backtest":
-            result = service.backtest(args.snapshot, args.start, args.end, args.capital)
+            operation = service.cost_sensitivity if args.cost_sensitivity else service.backtest
+            result = operation(args.snapshot, args.start, args.end, args.capital)
             output({k: result[k] for k in ("run_id", "status", "start", "end", "synthetic") } |
-                   {"metrics": result["strategy"]["metrics"], "exports": str(service.store.artifact_dir(result["run_id"]))})
+                   ({"scenario_count": result["scenario_count"], "informative": result["informative"], "summary": result["summary"]}
+                    if args.cost_sensitivity else {"metrics": result["strategy"]["metrics"]}) |
+                   {"exports": str(service.store.artifact_dir(result["run_id"]))})
         elif args.command == "status":
             from finsight.jobs import Jobs
             from finsight.scheduler import rollout_status

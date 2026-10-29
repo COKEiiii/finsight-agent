@@ -14,6 +14,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from finsight.collection_status import elapsed_seconds, recovery_status
+from finsight.cost_sensitivity import render_costs
 from finsight.data.quality import audit
 from finsight.evaluation_review import completed_suites, import_review, review_packet, review_status
 from finsight.jobs import Jobs
@@ -443,6 +444,37 @@ def main():
                     st.success("回测报告已保存")
                 except (ValueError, KeyError) as exc:
                     st.error(str(exc))
+            st.caption("成本敏感性比较六组预设佣金与滑点假设，每组同时计算多因子和纯动量组合。策略保持冻结；点击后才计算。")
+            if st.button("运行成本敏感性对比"):
+                try:
+                    with st.spinner("比较佣金、滑点与成交路径…"):
+                        service.cost_sensitivity(snapshot_id, start, end, capital)
+                    st.success("成本敏感性报告已保存")
+                except (ValueError, KeyError) as exc:
+                    st.error(str(exc))
+            saved_costs = [json.loads(row["payload"]) for row in service.store.runs("cost_sensitivity")
+                if row["snapshot_id"] == snapshot_id]
+            saved_costs = [report for report in saved_costs if report.get("config_id") == service.config.config_id]
+            if saved_costs:
+                report = saved_costs[0]
+                st.caption(f"已保存成本对比：{report['start']} 至 {report['end']} · 初始资金 {report['initial_capital']:,.2f} 元 · {report['strategy_version']}")
+                if not report["historical_validation_passed"]:
+                    st.warning(report["status"])
+                if not report["informative"]:
+                    st.info("存在无成交情景或日行情缺口，当前结果无法判断成本影响。")
+                table = pd.DataFrame(report["summary"])
+                table["portfolio"] = table["portfolio"].map({"strategy": "多因子", "momentum_baseline": "纯动量"})
+                table["commission_bps"] = (table["commission_rate"] * 10_000).round(4)
+                table["return_pct"] = (table["cumulative_return"] * 100).round(4)
+                table["return_delta_pp"] = (table["return_difference_vs_base"] * 100).round(4)
+                columns = {"label": "情景", "portfolio": "组合", "commission_bps": "单边佣金 bp", "slippage_bps": "单边滑点 bp",
+                    "fill_count": "模拟成交笔数", "cancelled_count": "未成交笔数", "transaction_costs": "佣金与税费（元）",
+                    "return_pct": "累计收益（%）", "return_delta_pp": "对基准收益差（百分点）"}
+                st.dataframe(table[list(columns)].rename(columns=columns), hide_index=True)
+                st.caption("每笔佣金最低五元；滑点通过成交价影响现金、持仓及净值。各情景重新执行，成交路径可能改变。")
+                st.download_button("下载成本对比 JSON", json.dumps(report, ensure_ascii=False, indent=2), file_name="cost_sensitivity.json")
+                st.download_button("下载成本对比 CSV", pd.DataFrame(report["summary"]).to_csv(index=False).encode("utf-8-sig"), file_name="cost_sensitivity.csv")
+                st.download_button("下载成本对比 Markdown", render_costs(report), file_name="cost_sensitivity.md")
         tests = [r for r in service.store.runs("backtest") if r["snapshot_id"] == snapshot_id]
         if tests:
             bt = json.loads(tests[0]["payload"])
