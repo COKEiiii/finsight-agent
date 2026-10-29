@@ -11,6 +11,14 @@ from finsight.data.universe import MAINBOARD_PREFIXES, current_members
 from finsight.models import StrategyConfig, fingerprint
 
 STRUCTURAL_RULES = {"outside_board", "listing_age", "risk_warning", "delisting", "suspended", "not_member"}
+PRICE_FIELDS = ("adj_close", "amount", "close", "open", "high", "low", "volume")
+
+
+def invalid_price_mask(window: pd.DataFrame) -> pd.Series:
+    """The same validity boundary for selection and row-level gap diagnostics."""
+    numeric = window[list(PRICE_FIELDS)].apply(pd.to_numeric, errors="coerce")
+    return ~np.isfinite(numeric).all(axis=1) | (numeric["close"] <= 0) | (numeric["open"] <= 0) | (numeric["amount"] < 0) | (numeric["volume"] < 0) | (
+        numeric["high"] < numeric[["open", "close"]].max(axis=1)) | (numeric["low"] > numeric[["open", "close"]].min(axis=1))
 
 
 def evaluate(bundle: SnapshotBundle, as_of: date, config: StrategyConfig) -> tuple[pd.DataFrame, list[dict]]:
@@ -27,11 +35,9 @@ def evaluate(bundle: SnapshotBundle, as_of: date, config: StrategyConfig) -> tup
     expected = calendar[-61:]
     window = prices.groupby("symbol", sort=False).tail(61).copy()
     if not window.empty:
-        for name in ("adj_close", "amount", "close", "open", "high", "low", "volume"):
+        for name in PRICE_FIELDS:
             window[name] = pd.to_numeric(window[name], errors="coerce")
-        numeric = window[["adj_close", "amount", "close", "open", "high", "low", "volume"]]
-        window["_invalid"] = ~np.isfinite(numeric).all(axis=1) | (window["close"] <= 0) | (window["open"] <= 0) | (window["amount"] < 0) | (window["volume"] < 0) | (
-            window["high"] < window[["open", "close"]].max(axis=1)) | (window["low"] > window[["open", "close"]].min(axis=1))
+        window["_invalid"] = invalid_price_mask(window)
         grouped = window.groupby("symbol", sort=False)
         price_metrics = grouped.agg(count=("trade_date", "count"), first_date=("trade_date", "first"),
             last_date=("trade_date", "last"), last_close=("close", "last"), first_adj=("adj_close", "first"),

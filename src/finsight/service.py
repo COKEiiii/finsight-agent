@@ -231,6 +231,26 @@ class FinSight:
         from finsight.diagnostics import diagnose_run
         return diagnose_run(self.store, run_id)
 
+    def collection_gaps(self, job_id: str) -> dict:
+        from finsight.data_gaps import build_gap_report, render_gap_report
+        from finsight.jobs import Jobs
+        job = Jobs(self.store).get(job_id)
+        if not job["snapshot_id"]:
+            raise ValueError("collection has no saved snapshot to diagnose")
+        config = StrategyConfig.model_validate(job["config"].get("strategy", self.config.model_dump()))
+        report = build_gap_report(self.store, job["snapshot_id"], config)
+        report["job_id"] = job_id
+        run_id = self.store.save_run("collection_gaps", job["snapshot_id"], config, report)
+        folder = self.store.artifact_dir(run_id)
+        report.update(run_id=run_id, exports=str(folder))
+        (folder / "data_gaps.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+        (folder / "data_gaps.md").write_text(render_gap_report(report), encoding="utf-8")
+        bars = [bar for item in report["details"] for bar in item["invalid_bars"]]
+        pd.DataFrame(bars, columns=["symbol", "trade_date", "adj_close", "amount", "close", "open", "high", "low",
+            "volume", "suspended", "missing_fields", "source", "fetched_at"]).to_csv(
+            folder / "invalid_bars.csv", index=False, encoding="utf-8-sig")
+        return report
+
     def observe_signal(self, run_id: str) -> dict:
         from finsight.observations import seal_signal
         return seal_signal(self.store, run_id)

@@ -4,10 +4,11 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
-from finsight.data.collector import Collector
+from finsight.data.collector import Collector, merge_observations
 from finsight.data.quality import audit
 from finsight.data.requests import RequestBroker
 from finsight.data.store import Store
+from finsight.factors import coverage_report, evaluate
 from finsight.jobs import Jobs
 
 
@@ -36,6 +37,94 @@ class AlternateAPI:
     def stock_financial_analysis_indicator_em(self, symbol, indicator):
         return pd.DataFrame({"REPORT_DATE": ["2025-12-31"], "NOTICE_DATE": ["2026-03-20"],
                              "ROEJQ": [10.2], "TOTALOPERATEREVETZ": [10.]})
+
+
+def status_collector(tmp_path, status, *, omit_status=False, empty_turnover=False):
+    class StatusAPI(AlternateAPI):
+        def baostock_kline(self, **kwargs):
+            frame = super().baostock_kline(**kwargs)
+            if kwargs["adjustflag"] == "3":
+                if omit_status:
+                    frame = frame.drop(columns="tradestatus")
+                else:
+                    frame["tradestatus"] = status
+                if empty_turnover:
+                    frame["amount"] = ""
+                    frame["volume"] = ""
+            return frame
+
+    store = Store(tmp_path)
+    job = Jobs(store).create({"case": "trade-status"})
+    broker = RequestBroker(store, job["job_id"], api=StatusAPI(), interval=0, retries=0,
+        clock=lambda: datetime(2026, 10, 26, 18, tzinfo=ZoneInfo("Asia/Shanghai")))
+    return Collector(broker, {"mainboard": True})
+
+
+@pytest.mark.parametrize("status,expected", [
+    ("0", True), ("1", False), (" 0 ", True), (" 1 ", False), (0, True), (1, False),
+    ("", None), (" ", None), (None, None), ("2", None), ("unknown", None),
+    (True, None), (False, None), (0.0, None), (1.0, None),
+])
+def test_baostock_unknown_status_stays_nullable(tmp_path, status, expected):
+    collector = status_collector(tmp_path, status)
+    prices, _, _ = collector._bars_baostock("600036", "2026-07-01", "2026-10-26")
+    assert str(prices["suspended"].dtype) == "boolean"
+    if expected is None:
+        assert prices["suspended"].isna().all()
+    else:
+        assert prices["suspended"].eq(expected).all()
+
+
+def test_baostock_missing_status_column_preserves_prices_as_unknown(tmp_path):
+    collector = status_collector(tmp_path, None, omit_status=True)
+    prices, valuations, _ = collector._bars_baostock("600036", "2026-07-01", "2026-10-26")
+    assert len(prices) == len(valuations) >= 61
+    assert prices["suspended"].isna().all()
+
+
+def test_baostock_suspension_does_not_invent_turnover(tmp_path):
+    collector = status_collector(tmp_path, "0", empty_turnover=True)
+    prices, _, _ = collector._bars_baostock("600036", "2026-07-01", "2026-10-26")
+    assert prices["suspended"].all()
+    assert prices[["amount", "volume"]].isna().all().all()
+
+
+def test_status_dtype_change_keeps_first_visibility_but_unknown_is_a_revision(tmp_path):
+    collector = status_collector(tmp_path, "1")
+    new, _, _ = collector._bars_baostock("600036", "2026-07-01", "2026-10-26")
+    old = new.copy()
+    old["suspended"] = old["suspended"].astype(bool)
+    old["fetched_at"] = "2026-10-25T18:00:00+08:00"
+    merged = merge_observations(old, new, ["symbol", "trade_date"])
+    assert merged["fetched_at"].eq("2026-10-25T18:00:00+08:00").all()
+    new.loc[new["trade_date"] == "2026-10-26", "suspended"] = pd.NA
+    revised = merge_observations(old, new, ["symbol", "trade_date"])
+    current = revised.loc[revised["trade_date"] == "2026-10-26"].iloc[0]
+    assert pd.isna(current["suspended"])
+    assert current["fetched_at"] == "2026-10-26T18:00:00+08:00"
+
+
+@pytest.mark.parametrize("status,category,code", [
+    ("0", "structural_rule", "suspended"),
+    ("1", "strategy_rule", "nonpositive_valuation"),
+    ("", "data", "unknown_suspension"),
+    (None, "data", "unknown_suspension"),
+])
+def test_parsed_status_keeps_unknown_in_coverage_even_with_negative_valuation(
+        tmp_path, bundle, config, status, category, code):
+    collector = status_collector(tmp_path, status)
+    prices, _, _ = collector._bars_baostock("600036", "2026-07-01", "2026-10-26")
+    symbol = bundle["universe"].iloc[0]["symbol"]
+    bundle.tables["prices"]["suspended"] = bundle["prices"]["suspended"].astype("boolean")
+    current = (bundle["prices"]["symbol"] == symbol) & (bundle["prices"]["trade_date"] == str(bundle.meta.as_of))
+    bundle.tables["prices"].loc[current, "suspended"] = prices["suspended"].iloc[-1]
+    bundle.tables["valuations"].loc[bundle["valuations"]["symbol"] == symbol, "pe_ttm"] = -5.
+    frame, exclusions = evaluate(bundle, bundle.meta.as_of, config)
+    row = next(item for item in exclusions if item["symbol"] == symbol)
+    assert row["category"] == category and code in row["codes"]
+    coverage = coverage_report(bundle, frame, exclusions)
+    assert coverage["missing_count"] == int(category == "data")
+    assert coverage["confirmed_exclusions"] == int(category == "structural_rule")
 
 
 def test_free_alternate_source_preserves_factor_units_and_first_visibility(tmp_path):

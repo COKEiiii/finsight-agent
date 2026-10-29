@@ -202,7 +202,10 @@ class Collector(AKShareProvider):
         for field in ("open", "high", "low", "close", "prev_close", "volume", "amount", "adj_close", "peTTM", "pbMRQ"):
             raw[field] = pd.to_numeric(raw[field], errors="coerce")
         raw["symbol"] = normalize_symbol(code)
-        raw["suspended"] = raw["tradestatus"].eq("0")
+        # Only explicit 0/1 codes certify a state. Unknown values must
+        # remain missing coverage rather than silently becoming normal trading.
+        status = raw.get("tradestatus", pd.Series(pd.NA, index=raw.index, dtype="string"))
+        raw["suspended"] = status.astype("string").str.strip().map({"0": True, "1": False}).astype("boolean")
         raw["limit_up"], raw["limit_down"] = np.nan, np.nan
         raw["source"], raw["fetched_at"] = "baostock:query_history_k_data_plus", fetched
         prices = raw[["symbol", "trade_date", "open", "high", "low", "close", "adj_close", "volume", "amount",

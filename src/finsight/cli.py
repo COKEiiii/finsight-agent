@@ -116,7 +116,7 @@ def parser() -> argparse.ArgumentParser:
     job = commands.add_parser("jobs", help="durable collector progress and recovery")
     sub = job.add_subparsers(dest="job_action", required=True)
     sub.add_parser("list")
-    for action in ("show", "resume", "cancel", "profile"):
+    for action in ("show", "resume", "cancel", "profile", "gaps"):
         sub.add_parser(action).add_argument("job_id")
     return p
 
@@ -321,6 +321,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "jobs":
             from finsight.jobs import Jobs
             jobs = Jobs(service.store)
+            if args.job_action == "gaps":
+                report = service.collection_gaps(args.job_id)
+                output({key: report[key] for key in ("run_id", "snapshot_id", "coverage", "missing_reason_counts",
+                    "invalid_bar_count", "invalid_bars_with_confirmed_suspension", "exports")})
+                return 0
             if args.job_action == "list":
                 output(jobs.list())
             elif args.job_action == "show":
