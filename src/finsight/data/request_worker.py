@@ -8,14 +8,50 @@ class AlternateUnavailable(RuntimeError):
     pass
 
 
+class ReceivingSocket:
+    """Treat EOF as a broken connection instead of letting the SDK spin on empty recv()."""
+    def __init__(self, socket):
+        self.socket = socket
+
+    def recv(self, *args, **kwargs):
+        block = self.socket.recv(*args, **kwargs)
+        if not block:
+            raise ConnectionError("BaoStock connection closed during response")
+        return block
+
+    def __getattr__(self, name):
+        return getattr(self.socket, name)
+
+
+def reset_alternate_session():
+    import baostock.common.context as context
+
+    alternate_query.logged_in = False
+    socket = getattr(context, "default_socket", None)
+    if socket is not None:
+        with contextlib.suppress(OSError):
+            socket.close()
+        delattr(context, "default_socket")
+
+
+def checked_alternate_result(response, method):
+    if response is None:
+        reset_alternate_session()
+        raise AlternateUnavailable(f"BaoStock {method}: no response")
+    if response.error_code != "0":
+        reset_alternate_session()
+        if method == "login" or response.error_code.startswith("10002"):
+            raise AlternateUnavailable(f"BaoStock {method}: {response.error_code}")
+        raise ValueError(f"BaoStock {method}: {response.error_code}")
+
+
 def alternate_query(method, kwargs):
     import baostock as bs
     import pandas as pd
 
     if not getattr(alternate_query, "logged_in", False):
         login = bs.login()
-        if login.error_code != "0":
-            raise AlternateUnavailable(f"BaoStock login: {login.error_code}")
+        checked_alternate_result(login, "login")
         alternate_query.logged_in = True
     if method == "baostock_kline":
         fields = "date,code,open,high,low,close,preclose,volume,amount,tradestatus,peTTM,pbMRQ,isST" if kwargs["adjustflag"] == "3" else "date,close"
@@ -32,15 +68,13 @@ def alternate_query(method, kwargs):
             end_date=kwargs["end_date"], frequency="d", adjustflag="3")
     else:
         raise ValueError("unknown alternate data query")
-    if response.error_code != "0":
-        alternate_query.logged_in = False
-        if response.error_code.startswith("10002"):
-            raise AlternateUnavailable(f"BaoStock {method}: {response.error_code}")
-        raise ValueError(f"BaoStock {method}: {response.error_code}")
+    checked_alternate_result(response, method)
     # BaoStock 0.9.4 get_data() still calls DataFrame.append, removed by Pandas 2.
     rows = []
     while response.next():
+        checked_alternate_result(response, method)
         rows.append(response.get_row_data())
+    checked_alternate_result(response, method)
     return pd.DataFrame(rows, columns=response.fields)
 
 
@@ -83,7 +117,15 @@ def request_worker(connection):
             def paced_socket(*args, **kwargs):
                 budget()
                 request_count[0] += 1
-                return original_socket(*args, **kwargs)
+                import baostock.common.context as context
+                socket = getattr(context, "default_socket", None)
+                if socket is not None and not isinstance(socket, ReceivingSocket):
+                    context.default_socket = ReceivingSocket(socket)
+                response = original_socket(*args, **kwargs)
+                # ResultData.next() otherwise silently treats an empty transport reply as EOF.
+                if not isinstance(response, str) or not response.strip():
+                    raise AlternateUnavailable("BaoStock transport: empty response")
+                return response
 
             socketutil.send_msg = paced_socket
         started = time.perf_counter()
@@ -103,7 +145,7 @@ def request_worker(connection):
             response = getattr(exc, "response", None)
             status = getattr(response, "status_code", None)
             if message["method"].startswith("baostock_"):
-                alternate_query.logged_in = False
+                reset_alternate_session()
             kind = "provider_unavailable" if isinstance(exc, AlternateUnavailable) else "rate_limit" if status == 429 else "upstream"
             connection.send({"ok": False, "kind": kind,
                              "error": str(exc) if isinstance(exc, AlternateUnavailable) else type(exc).__name__, "http_status": status,

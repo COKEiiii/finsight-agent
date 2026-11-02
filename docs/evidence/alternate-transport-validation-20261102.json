@@ -1,0 +1,291 @@
+{
+  "recorded_date": "2026-11-02",
+  "installed_baostock_version": "0.9.4",
+  "historical_failure_cause_proven": false,
+  "production_source_changed": false,
+  "production_snapshot_changed": false,
+  "model_requests": 0,
+  "logical_queries_this_turn": 4,
+  "observed_tcp_requests_this_turn": 7,
+  "normal_kline_probe": {
+    "job_id": "30eba4cdf0dc47cf85d8eb7531be685d",
+    "model_requests": 0,
+    "production_snapshot_changed": false,
+    "queries": [
+      {
+        "adjustflag": "3",
+        "rows": 11,
+        "columns": [
+          "date",
+          "code",
+          "open",
+          "high",
+          "low",
+          "close",
+          "preclose",
+          "volume",
+          "amount",
+          "tradestatus",
+          "peTTM",
+          "pbMRQ",
+          "isST"
+        ],
+        "first_date": "2026-10-16",
+        "last_date": "2026-10-30",
+        "fetched_at": "2026-11-02T09:52:24.154046+08:00"
+      },
+      {
+        "adjustflag": "1",
+        "rows": 11,
+        "columns": [
+          "date",
+          "close"
+        ],
+        "first_date": "2026-10-16",
+        "last_date": "2026-10-30",
+        "fetched_at": "2026-11-02T09:52:25.148596+08:00"
+      }
+    ],
+    "status": "completed",
+    "elapsed_seconds": 3.334,
+    "requests": {
+      "total": 2,
+      "completed": 2,
+      "failed": 0,
+      "network_attempts": 2,
+      "cache_hits": 0,
+      "serialized_bytes": 10667,
+      "http_bytes": 0,
+      "observed_network_requests": 3,
+      "unmeasured_timeouts": 0,
+      "request_seconds": 3.3186727910001537
+    }
+  },
+  "daily_batch_probe": {
+    "job_id": "c583eaf94af74e1bb059f5dba6c47bff",
+    "model_requests": 0,
+    "production_snapshot_changed": false,
+    "status": "completed",
+    "rows": 5223,
+    "columns": [
+      "date",
+      "code",
+      "open",
+      "high",
+      "low",
+      "close",
+      "preclose",
+      "volume",
+      "amount",
+      "adjustflag",
+      "turn",
+      "tradestatus",
+      "pctChg",
+      "peTTM",
+      "pbMRQ",
+      "psTTM",
+      "pcfNcfTTM",
+      "isST"
+    ],
+    "example": [
+      {
+        "date": "2026-10-30",
+        "code": "sh.600000",
+        "open": "9.9800",
+        "high": "10.0400",
+        "low": "9.9000",
+        "close": "10.0200",
+        "preclose": "9.9900",
+        "volume": "64886491",
+        "amount": "647741482.8600",
+        "adjustflag": "3",
+        "turn": "0.194800",
+        "tradestatus": "1",
+        "pctChg": "0.300300",
+        "peTTM": "6.514113",
+        "pbMRQ": "0.442691",
+        "psTTM": "1.883512",
+        "pcfNcfTTM": "9.867084",
+        "isST": "0"
+      },
+      {
+        "date": "2026-10-30",
+        "code": "sh.600004",
+        "open": "7.9500",
+        "high": "8.1000",
+        "low": "7.8700",
+        "close": "8.0500",
+        "preclose": "7.9400",
+        "volume": "17682257",
+        "amount": "141799881.5000",
+        "adjustflag": "3",
+        "turn": "0.747100",
+        "tradestatus": "1",
+        "pctChg": "1.385400",
+        "peTTM": "18.121941",
+        "pbMRQ": "1.002403",
+        "psTTM": "2.503067",
+        "pcfNcfTTM": "6.588280",
+        "isST": "0"
+      }
+    ],
+    "elapsed_seconds": 19.983,
+    "requests": {
+      "total": 1,
+      "completed": 1,
+      "failed": 0,
+      "network_attempts": 1,
+      "cache_hits": 0,
+      "serialized_bytes": 550468,
+      "http_bytes": 0,
+      "observed_network_requests": 2,
+      "unmeasured_timeouts": 0,
+      "request_seconds": 19.969854166000005
+    }
+  },
+  "factor_probe": {
+    "job_id": "19c78fd54bc3412c9fb5a1df3bc081b9",
+    "model_requests": 0,
+    "production_snapshot_changed": false,
+    "status": "completed",
+    "rows": 11,
+    "columns": [
+      "code",
+      "dividOperateDate",
+      "foreAdjustFactor",
+      "backAdjustFactor",
+      "adjustFactor"
+    ],
+    "example": [
+      {
+        "code": "sz.000728",
+        "dividOperateDate": "2026-10-30",
+        "foreAdjustFactor": "1.000000",
+        "backAdjustFactor": "2.567786",
+        "adjustFactor": "2.567786"
+      },
+      {
+        "code": "sz.000807",
+        "dividOperateDate": "2026-10-30",
+        "foreAdjustFactor": "1.000000",
+        "backAdjustFactor": "5.879323",
+        "adjustFactor": "5.879323"
+      }
+    ],
+    "elapsed_seconds": 1.807,
+    "requests": {
+      "total": 1,
+      "completed": 1,
+      "failed": 0,
+      "network_attempts": 1,
+      "cache_hits": 0,
+      "serialized_bytes": 4160,
+      "http_bytes": 0,
+      "observed_network_requests": 2,
+      "unmeasured_timeouts": 0,
+      "request_seconds": 1.7960229579998668
+    }
+  },
+  "comparison": {
+    "date": "2026-10-30",
+    "daily_rows": 5223,
+    "mainboard_reference_snapshot": "akshare-2026-10-29-8fa2340955",
+    "reference_members": 3194,
+    "present_reference_members": 3194,
+    "missing_reference_members": [],
+    "duplicate_codes": 0,
+    "dates": [
+      "2026-10-30"
+    ],
+    "adjustflags": [
+      "3"
+    ],
+    "raw_control_symbol": "600036.SH",
+    "raw_control_fields": [
+      "date",
+      "code",
+      "open",
+      "high",
+      "low",
+      "close",
+      "preclose",
+      "volume",
+      "amount",
+      "tradestatus",
+      "peTTM",
+      "pbMRQ",
+      "isST"
+    ],
+    "raw_control_differences": {},
+    "model_requests": 0,
+    "production_source_changed": false,
+    "sample_snapshot": "akshare-2026-10-30-c2d98f9402",
+    "sample_numeric_comparison": [
+      {
+        "table": "prices",
+        "field": "open",
+        "pairs": 20,
+        "equal_within_1e_8": 20,
+        "different_symbols": []
+      },
+      {
+        "table": "prices",
+        "field": "high",
+        "pairs": 20,
+        "equal_within_1e_8": 20,
+        "different_symbols": []
+      },
+      {
+        "table": "prices",
+        "field": "low",
+        "pairs": 20,
+        "equal_within_1e_8": 20,
+        "different_symbols": []
+      },
+      {
+        "table": "prices",
+        "field": "close",
+        "pairs": 20,
+        "equal_within_1e_8": 20,
+        "different_symbols": []
+      },
+      {
+        "table": "prices",
+        "field": "prev_close",
+        "pairs": 20,
+        "equal_within_1e_8": 20,
+        "different_symbols": []
+      },
+      {
+        "table": "prices",
+        "field": "volume",
+        "pairs": 20,
+        "equal_within_1e_8": 20,
+        "different_symbols": []
+      },
+      {
+        "table": "prices",
+        "field": "amount",
+        "pairs": 20,
+        "equal_within_1e_8": 20,
+        "different_symbols": []
+      },
+      {
+        "table": "valuations",
+        "field": "pe_ttm",
+        "pairs": 20,
+        "equal_within_1e_8": 20,
+        "different_symbols": []
+      },
+      {
+        "table": "valuations",
+        "field": "pb",
+        "pairs": 20,
+        "equal_within_1e_8": 20,
+        "different_symbols": []
+      }
+    ]
+  },
+  "full_collector_validation_passed": false,
+  "historical_validation_passed": false
+}

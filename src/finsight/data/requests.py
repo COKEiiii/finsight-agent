@@ -107,6 +107,11 @@ class RequestBroker:
         if self.pool:
             self.pool.close()
 
+    def _alternate_failure(self):
+        with self.condition:
+            self.alternate_failures += 1
+            self.alternate_unavailable = self.alternate_failures >= 3
+
     def _ttl(self, method: str) -> float:
         return 7 * 86400 if method in {"stock_individual_info_em", "baostock_industry"} else 86400
 
@@ -190,8 +195,18 @@ class RequestBroker:
                         if self.cancel_event.is_set():
                             from finsight.jobs import JobCancelled
                             raise JobCancelled("collection interrupted; successful requests remain resumable")
-                        response = self.pool.execute(method, kwargs, timeout, rate={
-                            "database": str(self.store.root / "finsight.sqlite"), "interval": self.interval})
+                        try:
+                            response = self.pool.execute(method, kwargs, timeout, rate={
+                                "database": str(self.store.root / "finsight.sqlite"), "interval": self.interval})
+                        except RequestFailure as exc:
+                            if method.startswith("baostock_") and exc.kind in {"timeout", "provider_unavailable"}:
+                                # Update health before releasing the source lock: a waiting peer
+                                # must see the third failure before it can start another request.
+                                self._alternate_failure()
+                            raise
+                        if method.startswith("baostock_"):
+                            with self.condition:
+                                self.alternate_failures = 0
                     frame = response["frame"]
                     http_bytes = response.get("http_bytes") or 0
                     network_requests = response.get("network_requests") or 0
@@ -226,9 +241,15 @@ class RequestBroker:
                 frame.attrs["loaded_at"] = fetched
                 with self.condition:
                     self.failure_streak = 0
-                    if method.startswith("baostock_"):
+                    if method.startswith("baostock_") and self.api is not None:
                         self.alternate_failures = 0
                 return frame
+            except SourceUnavailable as exc:
+                # A queued peer may discover the circuit opened after it recorded "running".
+                # It never issued a request; retain a resumable failure without charging an attempt.
+                self._record(key, method, kwargs, "failed", error_kind="source_unavailable",
+                             loaded_at=self.clock().isoformat(), error_detail=str(exc))
+                raise
             except (ValueError, OSError) as exc:
                 failure = exc.kind if isinstance(exc, RequestFailure) else "upstream_schema"
                 last_detail = exc.detail if isinstance(exc, RequestFailure) else type(exc).__name__
@@ -243,9 +264,8 @@ class RequestBroker:
                         self.limit = max(1, self.limit // 2)
                 self.jobs.update(self.job_id, progress={"effective_workers": self.limit})
                 if method.startswith("baostock_") and failure in {"timeout", "provider_unavailable"}:
-                    with self.condition:
-                        self.alternate_failures += 1
-                        self.alternate_unavailable = self.alternate_failures >= 3
+                    if self.api is not None:
+                        self._alternate_failure()
                     if self.alternate_unavailable:
                         raise SourceUnavailable("BaoStock failed three consecutive requests; job stopped with checkpoints preserved") from exc
             finally:
