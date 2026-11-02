@@ -89,9 +89,13 @@ def request_worker(connection):
         started = time.perf_counter()
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                frame = (alternate_query(message["method"], message["kwargs"])
-                         if message["method"].startswith("baostock_") else
-                         getattr(ak, message["method"])(**message["kwargs"]))
+                if message["method"] == "eastmoney_annual_page":
+                    from finsight.data.eastmoney import annual_page
+                    frame = annual_page(**message["kwargs"])
+                else:
+                    frame = (alternate_query(message["method"], message["kwargs"])
+                             if message["method"].startswith("baostock_") else
+                             getattr(ak, message["method"])(**message["kwargs"]))
             connection.send({"ok": True, "frame": frame, "http_bytes": received[0] or None,
                              "network_requests": request_count[0],
                              "elapsed": time.perf_counter() - started})

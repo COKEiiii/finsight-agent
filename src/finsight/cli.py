@@ -38,6 +38,10 @@ def parser() -> argparse.ArgumentParser:
     sync.add_argument("--limit", type=int, help="mainboard validation batch, e.g. 100 or 500")
     sync.add_argument("--workers", type=int, choices=[1, 2, 3, 4], default=4)
     sync.add_argument("--requests-per-second", type=float, default=1)
+    sync.add_argument("--financial-source", choices=["auto", "paged", "single"],
+        help="default auto retains the existing source path; paged is an opt-in annual-report validation path")
+    sync.add_argument("--financial-page-size", type=int, choices=[100, 250, 500],
+        help="paged annual-report rows per request; default 100, fixed on resume")
     screen = commands.add_parser("screen", help="deterministic ranking and portfolio reference plan")
     screen.add_argument("--snapshot")
     screen.add_argument("--as-of", type=date.fromisoformat)
@@ -187,7 +191,8 @@ def main(argv: list[str] | None = None) -> int:
                                   args.symbols.split(",") if args.symbols else None,
                                   args.universe == "mainboard", args.request_timeout, args.retries,
                                   resume=args.resume, background=args.background, limit=args.limit,
-                                  workers=args.workers, interval=1 / args.requests_per_second)
+                                  workers=args.workers, interval=1 / args.requests_per_second,
+                                  financial_source=args.financial_source, financial_page_size=args.financial_page_size)
             output(result)
             if args.background or result.get("status") == "already_running":
                 return 0

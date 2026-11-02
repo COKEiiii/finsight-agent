@@ -25,7 +25,18 @@ class FinSight:
              symbols: list[str] | None = None, mainboard: bool = False,
              timeout: float = 30, retries: int = 2, *, resume: str | None = None,
              background: bool = False, limit: int | None = None, workers: int = 4,
-             interval: float = 1, api=None, clock=None) -> dict:
+             interval: float = 1, api=None, clock=None, financial_source: str | None = None,
+             financial_page_size: int | None = None) -> dict:
+        if financial_source is not None and financial_source not in {"auto", "paged", "single"}:
+            raise ValueError("financial source must be auto, paged or single")
+        if financial_source in {"paged", "single"} and provider != "akshare" and resume is None:
+            raise ValueError("financial source selection requires the akshare provider")
+        if financial_source == "paged" and not mainboard and resume is None:
+            raise ValueError("paged annual reports require a mainboard validation profile")
+        if financial_page_size is not None and (type(financial_page_size) is not int or financial_page_size not in {100, 250, 500}):
+            raise ValueError("financial page size must be 100, 250 or 500")
+        if financial_page_size is not None and financial_source != "paged" and resume is None:
+            raise ValueError("financial page size requires the paged financial source")
         if provider == "demo" and resume is None:
             from finsight.data.universe import current_members, membership_id
             bundle = make_demo(as_of or date(2025, 12, 31), start or date(2022, 1, 3))
@@ -44,6 +55,10 @@ class FinSight:
             raise ValueError("invalid collector timeout/concurrency/retry/rate settings")
         jobs = Jobs(self.store)
         if resume:
+            if financial_source is not None and jobs.get(resume)["config"].get("financial_source", "auto") != financial_source:
+                raise ValueError("financial source is fixed for a resumed job")
+            if financial_page_size is not None and jobs.get(resume)["config"].get("financial_page_size") != financial_page_size:
+                raise ValueError("financial page size is fixed for a resumed job")
             job = jobs.resume(resume)
         else:
             members = [normalize_symbol(s) for s in symbols] if symbols else (None if mainboard else [normalize_symbol(s) for s in SAMPLE_CODES])
@@ -67,6 +82,8 @@ class FinSight:
             seeds = select_seeds(self.store, uid, min(as_of or cutoff, cutoff), now) if previous is None else []
             config = {"as_of": str(as_of) if as_of else None, "start": str(start) if start else None,
                 "symbols": symbols, "mainboard": mainboard, "limit": limit,
+                "financial_source": financial_source or "auto",
+                "financial_page_size": (financial_page_size or 100) if financial_source == "paged" else None,
                 "timeout": timeout, "retries": retries, "workers": workers, "interval": interval,
                 "universe_id": uid, "base_snapshot_id": previous.snapshot_id if previous else None,
                 "seed_snapshot_ids": seeds,

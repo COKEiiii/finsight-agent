@@ -50,7 +50,9 @@ class Collector(AKShareProvider):
         self.observations, self.observation_lock = {}, threading.Lock()
         self.mainboard = config.get("mainboard", False)
         self.sample_mode = not self.mainboard or bool(config.get("symbols"))
+        self.financial_source = config.get("financial_source", "auto")
         self.fallback_market = False
+        self.skip_bulk_financials = False
         if broker.api is None:
             with broker.store.connect() as db:
                 row = db.execute("SELECT 1 FROM job_requests r JOIN jobs j ON j.job_id=r.job_id "
@@ -58,7 +60,20 @@ class Collector(AKShareProvider):
                     "AND substr(j.created_at,1,10)>=? LIMIT 1", ((broker.clock().date() - timedelta(days=7)).isoformat(),)).fetchone()
             self.fallback_market = row is not None
             if self.fallback_market:
-                self.issues.append("近七日东方财富批量财报曾超时；行情使用 BaoStock，财务仍取单股年报加权 ROE。")
+                self.issues.append("近七日旧式批量财报曾超时；行情使用 BaoStock，财报按任务配置选择来源。")
+            with broker.store.connect() as db:
+                failed = db.execute("SELECT 1 FROM job_requests WHERE method='eastmoney_annual_page' "
+                    "AND status='failed' AND job_id<>? AND substr(loaded_at,1,10)=? LIMIT 1",
+                    (self.job_id, broker.clock().date().isoformat())).fetchone()
+                invalid = db.execute("SELECT 1 FROM jobs WHERE job_id<>? "
+                    "AND substr(json_extract(progress,'$.financial_bulk_failed_at'),1,10)=? "
+                    "AND json_extract(config,'$.financial_source')='paged' "
+                    "AND json_extract(progress,'$.financial_bulk_status')='per_stock_fallback' LIMIT 1",
+                    (self.job_id, broker.clock().date().isoformat())).fetchone()
+            self.skip_bulk_financials = self.financial_source == "paged" and (failed is not None or invalid is not None)
+            if self.skip_bulk_financials:
+                self.fallback_market = True
+                self.issues.append("今日其他任务的分页财报请求失败；本任务使用逐股年报，次日再探测分页来源。")
         self.base_groups = {key: {s: f for s, f in base[key].groupby("symbol", sort=False)} if base is not None and "symbol" in base[key] else {}
                             for key in ("prices", "financials", "valuations")}
         if base is not None and base.meta.captured_at > broker.clock():
@@ -139,6 +154,28 @@ class Collector(AKShareProvider):
         return frame.drop_duplicates("symbol")
 
     def _annual(self, year: int, calendar: pd.DataFrame) -> pd.DataFrame:
+        if self.financial_source != "paged":
+            return self._annual_legacy(year, calendar)
+        from finsight.data.eastmoney import annual_pages
+        frame = annual_pages(self.call, f"{year}-12-31", lambda page, pages: self.jobs.update(
+            self.job_id, progress={"phase": "financial_bulk", "annual_report_year": year,
+                "financial_page": page, "financial_pages": pages}), page_size=self.config.get("financial_page_size", 100))
+        fetched = frame["_page_fetched_at"]
+        frame = frame.rename(columns={"SECURITY_CODE": "code", "WEIGHTAVG_ROE": "roe", "YSTZ": "revenue_growth"})
+        frame["symbol"] = frame["code"].astype(str).map(normalize_symbol)
+        # A revision/update date without a time also waits until the next session.
+        dates = pd.concat([pd.to_datetime(frame[field], errors="coerce") for field in ("NOTICE_DATE", "UPDATE_DATE")], axis=1)
+        frame["announcement_date"] = date_column(dates.max(axis=1))
+        frame["report_period"] = f"{year}-12-31"
+        sessions = sorted(calendar["trade_date"])
+        frame["available_on"] = [max(next((s for s in sessions if s > str(d)), "9999-12-31"), seen[:10])
+            for d, seen in zip(frame["announcement_date"], fetched)]
+        frame["version"] = "observed-" + fetched
+        frame["source"], frame["fetched_at"] = "eastmoney:RPT_LICO_FN_CPD:WEIGHTAVG_ROE", fetched
+        frame["roe_basis"] = "weighted_annual"
+        return frame[["symbol", "report_period", "announcement_date", "available_on", "roe", "revenue_growth", "version", "source", "fetched_at", "roe_basis"]]
+
+    def _annual_legacy(self, year: int, calendar: pd.DataFrame) -> pd.DataFrame:
         frame = self.call("stock_yjbb_em", date=f"{year}1231")
         fetched = frame.attrs["fetched_at"]
         frame = frame.rename(columns={"股票代码": "code", "净资产收益率": "roe",
@@ -167,6 +204,34 @@ class Collector(AKShareProvider):
         frame["version"], frame["source"], frame["fetched_at"] = "observed-" + fetched, "akshare:stock_financial_analysis_indicator_em", fetched
         frame["roe_basis"] = "weighted_annual"
         return frame[["symbol", "report_period", "announcement_date", "available_on", "roe", "revenue_growth", "version", "source", "fetched_at", "roe_basis"]]
+
+    def _annual_reports(self, start: date, day: str, calendar: pd.DataFrame) -> pd.DataFrame:
+        annual = []
+        enabled = self.financial_source != "single" and (self.financial_source == "paged" or not self.fallback_market)
+        if self.mainboard and enabled and not self.skip_bulk_financials:
+            lower_year = date.fromisoformat(day).year - 2 if self.base else start.year - 2
+            for year in range(lower_year, date.fromisoformat(day).year):
+                if self.base and (date.fromisoformat(day) - date(year, 12, 31)).days > self.config.get("strategy", {}).get("max_report_age_days", 550):
+                    continue
+                try:
+                    annual.append(self._annual(year, calendar))
+                except (ValueError, KeyError) as exc:
+                    # Earlier reports cannot stand in for a missing latest batch.
+                    annual = []
+                    self.issues.append(f"annual {year}: {exc}")
+                    self.fallback_market = True
+                    name = "分页" if self.financial_source == "paged" else "批量"
+                    self.issues.append(f"东方财富{name}年报未完整通过；已完成请求保留，财务改用逐股年报加权 ROE。")
+                    self.jobs.update(self.job_id, progress={"financial_bulk_status": "per_stock_fallback",
+                        "financial_bulk_failed_at": self.broker.clock().isoformat(),
+                        "financial_bulk_error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+                    break
+            else:
+                self.jobs.update(self.job_id, progress={"financial_bulk_status": "complete"})
+        elif self.mainboard:
+            status = "single_stock_requested" if self.financial_source == "single" else "skipped_recent_failure"
+            self.jobs.update(self.job_id, progress={"financial_bulk_status": status})
+        return pd.concat(annual, ignore_index=True) if annual else pd.DataFrame(columns=sorted(REQUIRED["financials"]))
 
     def _bars(self, code: str, lower: str, day: str):
         kwargs = dict(symbol=code, period="daily", start_date=lower.replace("-", ""), end_date=day.replace("-", ""))
@@ -402,17 +467,7 @@ class Collector(AKShareProvider):
             "universe_id": uid, "mode": "incremental" if self.base else "bootstrap_with_local_data" if self.seeds else "bootstrap",
             "seeded_price_symbols": len(self.base_groups["prices"]),
             "seed_snapshot_ids": [item.meta.snapshot_id for item in self.seeds]})
-        annual = []
-        if self.mainboard and not self.fallback_market:
-            lower_year = date.fromisoformat(day).year - 2 if self.base else start.year - 2
-            for year in range(lower_year, date.fromisoformat(day).year):
-                try:
-                    annual.append(self._annual(year, calendar))
-                except (ValueError, KeyError) as exc:
-                    self.issues.append(f"annual {year}: {exc}")
-                    self.fallback_market = True
-                    self.issues.append("东方财富年报批量接口失败；行情改用 BaoStock，财务仍取单股年报加权 ROE，来源逐行记录。")
-                    break
+        annual = self._annual_reports(start, day, calendar)
         if self.fallback_market:
             try:
                 industries = self.call("baostock_industry")
@@ -424,7 +479,6 @@ class Collector(AKShareProvider):
                 stocks["industry_observed_at"] = industry_observed
             except (ValueError, KeyError):
                 self.issues.append("备用行业分类不可用；未知行业计入缺失。")
-        annual = pd.concat(annual, ignore_index=True) if annual else pd.DataFrame(columns=sorted(REQUIRED["financials"]))
         results = []
         with ThreadPoolExecutor(max_workers=self.broker.workers) as executor:
             futures = [executor.submit(self._symbol, row, annual, start, day, calendar) for row in stocks.to_dict("records")]

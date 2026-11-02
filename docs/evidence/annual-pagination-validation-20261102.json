@@ -1,0 +1,462 @@
+{
+  "recorded_date": "2026-11-02",
+  "scope": "isolated annual-source validation, not full collector or historical validation",
+  "default_source_changed": false,
+  "model_requests": 0,
+  "production_snapshot_changed": false,
+  "probe_job_id": "d7c428d01b5a4c1ba01dcfbc50581329",
+  "rows": 5579,
+  "pages": 56,
+  "prior_completed_pages_reused": 14,
+  "new_requests_this_resume": 42,
+  "elapsed_seconds_this_resume": 64.796,
+  "http_response_bytes_this_resume": 3976182,
+  "previous_timeout_attempts": 2,
+  "cumulative_attempts": 58,
+  "cumulative_observed_network_requests": 56,
+  "fetched_days": [
+    "2026-10-29",
+    "2026-11-02"
+  ],
+  "parquet_sha256": "b79dd46cedc4421dfc1b2086abbd1688132b03924eae018c9fd0e8c7ed43fbce",
+  "comparison": {
+    "snapshot_id": "akshare-2026-10-29-8fa2340955",
+    "saved_annual_rows": 2988,
+    "matched": 2988,
+    "fields": {
+      "roe": {
+        "valid_pairs": 2980,
+        "within_1e_8": 2980,
+        "missing_mismatch": 0,
+        "max_abs_difference_percentage_points": 0.0
+      },
+      "revenue_growth": {
+        "valid_pairs": 2988,
+        "within_1e_8": 2949,
+        "missing_mismatch": 0,
+        "max_abs_difference_percentage_points": 64.13479630991502
+      }
+    }
+  },
+  "revenue_difference_count": 39,
+  "differences": [
+    {
+      "symbol": "002670.SZ",
+      "field": "revenue_growth",
+      "saved": 2.289088883351,
+      "batch": 2.29,
+      "saved_fetched_at": "2026-10-26T17:34:08.882795+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:51.982717+08:00",
+      "notice_date": "2026-04-21 00:00:00",
+      "update_date": "2026-04-21 00:00:00"
+    },
+    {
+      "symbol": "002839.SZ",
+      "field": "revenue_growth",
+      "saved": 0.754130083172,
+      "batch": 0.75,
+      "saved_fetched_at": "2026-10-26T17:35:30.983305+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:55.529483+08:00",
+      "notice_date": "2026-03-31 00:00:00",
+      "update_date": "2026-03-31 00:00:00"
+    },
+    {
+      "symbol": "002945.SZ",
+      "field": "revenue_growth",
+      "saved": 18.335663247225,
+      "batch": 18.34,
+      "saved_fetched_at": "2026-10-26T17:36:39.671686+08:00",
+      "batch_fetched_at": "2026-11-02T09:42:44.704699+08:00",
+      "notice_date": "2026-04-01 00:00:00",
+      "update_date": "2026-04-01 00:00:00"
+    },
+    {
+      "symbol": "600104.SH",
+      "field": "revenue_growth",
+      "saved": 4.565698617417,
+      "batch": 4.57,
+      "saved_fetched_at": "2026-10-26T17:38:08.494209+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:05.875647+08:00",
+      "notice_date": "2026-04-02 00:00:00",
+      "update_date": "2026-04-02 00:00:00"
+    },
+    {
+      "symbol": "600390.SH",
+      "field": "revenue_growth",
+      "saved": -6.461694785247,
+      "batch": -6.46,
+      "saved_fetched_at": "2026-10-26T17:40:02.353261+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:09.769034+08:00",
+      "notice_date": "2026-04-18 00:00:00",
+      "update_date": "2026-04-18 00:00:00"
+    },
+    {
+      "symbol": "600517.SH",
+      "field": "revenue_growth",
+      "saved": 5.90915116131,
+      "batch": 5.91,
+      "saved_fetched_at": "2026-10-26T17:40:53.197379+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:11.627850+08:00",
+      "notice_date": "2026-04-30 00:00:00",
+      "update_date": "2026-04-30 00:00:00"
+    },
+    {
+      "symbol": "600939.SH",
+      "field": "revenue_growth",
+      "saved": -18.933043522941,
+      "batch": -18.93,
+      "saved_fetched_at": "2026-10-26T17:44:20.540247+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:18.598580+08:00",
+      "notice_date": "2026-04-28 00:00:00",
+      "update_date": "2026-04-28 00:00:00"
+    },
+    {
+      "symbol": "000617.SZ",
+      "field": "revenue_growth",
+      "saved": -13.394875730477,
+      "batch": -13.39,
+      "saved_fetched_at": "2026-10-27T11:21:47.599104+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:27.997673+08:00",
+      "notice_date": "2026-04-27 00:00:00",
+      "update_date": "2026-04-27 00:00:00"
+    },
+    {
+      "symbol": "000686.SZ",
+      "field": "revenue_growth",
+      "saved": 17.776777572382,
+      "batch": 17.78,
+      "saved_fetched_at": "2026-10-27T11:23:57.167161+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:38.350333+08:00",
+      "notice_date": "2026-04-25 00:00:00",
+      "update_date": "2026-04-25 00:00:00"
+    },
+    {
+      "symbol": "000712.SZ",
+      "field": "revenue_growth",
+      "saved": 40.330500228066,
+      "batch": 40.33,
+      "saved_fetched_at": "2026-10-27T11:25:03.004625+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:38.350333+08:00",
+      "notice_date": "2026-04-29 00:00:00",
+      "update_date": "2026-04-29 00:00:00"
+    },
+    {
+      "symbol": "000728.SZ",
+      "field": "revenue_growth",
+      "saved": 6.810232270612,
+      "batch": 6.81,
+      "saved_fetched_at": "2026-10-27T11:25:46.755282+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:38.350333+08:00",
+      "notice_date": "2026-04-21 00:00:00",
+      "update_date": "2026-04-21 00:00:00"
+    },
+    {
+      "symbol": "000776.SZ",
+      "field": "revenue_growth",
+      "saved": 34.33012999758,
+      "batch": 34.33,
+      "saved_fetched_at": "2026-10-27T11:27:07.617781+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:38.350333+08:00",
+      "notice_date": "2026-03-31 00:00:00",
+      "update_date": "2026-03-31 00:00:00"
+    },
+    {
+      "symbol": "000783.SZ",
+      "field": "revenue_growth",
+      "saved": 59.862911585572,
+      "batch": 59.86,
+      "saved_fetched_at": "2026-10-27T11:27:25.332860+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:38.350333+08:00",
+      "notice_date": "2026-04-28 00:00:00",
+      "update_date": "2026-04-28 00:00:00"
+    },
+    {
+      "symbol": "000958.SZ",
+      "field": "revenue_growth",
+      "saved": 1.859901756044,
+      "batch": 1.86,
+      "saved_fetched_at": "2026-10-27T11:33:42.279548+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:38.953165+08:00",
+      "notice_date": "2026-04-24 00:00:00",
+      "update_date": "2026-04-24 00:00:00"
+    },
+    {
+      "symbol": "000987.SZ",
+      "field": "revenue_growth",
+      "saved": 4.12595911754,
+      "batch": 4.13,
+      "saved_fetched_at": "2026-10-27T11:35:05.672613+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:41.078938+08:00",
+      "notice_date": "2026-04-09 00:00:00",
+      "update_date": "2026-04-09 00:00:00"
+    },
+    {
+      "symbol": "000997.SZ",
+      "field": "revenue_growth",
+      "saved": 13.076563218601,
+      "batch": 13.08,
+      "saved_fetched_at": "2026-10-27T11:35:15.700405+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:41.078938+08:00",
+      "notice_date": "2026-04-25 00:00:00",
+      "update_date": "2026-04-25 00:00:00"
+    },
+    {
+      "symbol": "001236.SZ",
+      "field": "revenue_growth",
+      "saved": -20.530122951784,
+      "batch": -20.53,
+      "saved_fetched_at": "2026-10-27T11:37:14.152862+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:41.078938+08:00",
+      "notice_date": "2026-04-01 00:00:00",
+      "update_date": "2026-04-01 00:00:00"
+    },
+    {
+      "symbol": "002423.SZ",
+      "field": "revenue_growth",
+      "saved": 3.685281677591,
+      "batch": 3.69,
+      "saved_fetched_at": "2026-10-27T12:04:45.699359+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:50.286816+08:00",
+      "notice_date": "2026-04-24 00:00:00",
+      "update_date": "2026-04-24 00:00:00"
+    },
+    {
+      "symbol": "002500.SZ",
+      "field": "revenue_growth",
+      "saved": 11.795170779316,
+      "batch": 11.8,
+      "saved_fetched_at": "2026-10-27T12:09:13.928084+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:51.046620+08:00",
+      "notice_date": "2026-04-28 00:00:00",
+      "update_date": "2026-04-28 00:00:00"
+    },
+    {
+      "symbol": "002608.SZ",
+      "field": "revenue_growth",
+      "saved": -3.794304774158,
+      "batch": -3.79,
+      "saved_fetched_at": "2026-10-27T12:15:01.560579+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:51.982717+08:00",
+      "notice_date": "2026-04-21 00:00:00",
+      "update_date": "2026-04-21 00:00:00"
+    },
+    {
+      "symbol": "002736.SZ",
+      "field": "revenue_growth",
+      "saved": 28.207334725146,
+      "batch": 28.21,
+      "saved_fetched_at": "2026-10-27T12:20:59.418426+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:53.028443+08:00",
+      "notice_date": "2026-04-18 00:00:00",
+      "update_date": "2026-04-18 00:00:00"
+    },
+    {
+      "symbol": "002797.SZ",
+      "field": "revenue_growth",
+      "saved": 4.371322700608,
+      "batch": 4.37,
+      "saved_fetched_at": "2026-10-27T12:23:43.301565+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:53.028443+08:00",
+      "notice_date": "2026-04-29 00:00:00",
+      "update_date": "2026-04-29 00:00:00"
+    },
+    {
+      "symbol": "002807.SZ",
+      "field": "revenue_growth",
+      "saved": 4.111827118907,
+      "batch": 4.11,
+      "saved_fetched_at": "2026-10-27T12:24:13.673959+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:53.028443+08:00",
+      "notice_date": "2026-04-29 00:00:00",
+      "update_date": "2026-04-29 00:00:00"
+    },
+    {
+      "symbol": "002926.SZ",
+      "field": "revenue_growth",
+      "saved": 17.754132191503,
+      "batch": 17.75,
+      "saved_fetched_at": "2026-10-27T12:30:31.920396+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:55.529483+08:00",
+      "notice_date": "2026-04-23 00:00:00",
+      "update_date": "2026-04-23 00:00:00"
+    },
+    {
+      "symbol": "002939.SZ",
+      "field": "revenue_growth",
+      "saved": 29.242014827598,
+      "batch": 29.24,
+      "saved_fetched_at": "2026-10-27T12:31:11.171974+08:00",
+      "batch_fetched_at": "2026-10-29T15:53:55.529483+08:00",
+      "notice_date": "2026-04-21 00:00:00",
+      "update_date": "2026-04-21 00:00:00"
+    },
+    {
+      "symbol": "002961.SZ",
+      "field": "revenue_growth",
+      "saved": 23.200374236277,
+      "batch": 23.2,
+      "saved_fetched_at": "2026-10-27T12:32:22.606778+08:00",
+      "batch_fetched_at": "2026-11-02T09:42:44.704699+08:00",
+      "notice_date": "2026-04-01 00:00:00",
+      "update_date": "2026-04-01 00:00:00"
+    },
+    {
+      "symbol": "600061.SH",
+      "field": "revenue_growth",
+      "saved": 3.786523031471,
+      "batch": 3.79,
+      "saved_fetched_at": "2026-10-27T09:11:34.073760+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:05.875647+08:00",
+      "notice_date": "2026-04-03 00:00:00",
+      "update_date": "2026-04-03 00:00:00"
+    },
+    {
+      "symbol": "600095.SH",
+      "field": "revenue_growth",
+      "saved": 10.374541255045,
+      "batch": 10.37,
+      "saved_fetched_at": "2026-10-27T09:12:57.680490+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:05.875647+08:00",
+      "notice_date": "2026-03-21 00:00:00",
+      "update_date": "2026-03-21 00:00:00"
+    },
+    {
+      "symbol": "600120.SH",
+      "field": "revenue_growth",
+      "saved": 3.685951602108,
+      "batch": 3.69,
+      "saved_fetched_at": "2026-10-27T09:14:11.696525+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:05.875647+08:00",
+      "notice_date": "2026-04-18 00:00:00",
+      "update_date": "2026-04-18 00:00:00"
+    },
+    {
+      "symbol": "600643.SH",
+      "field": "revenue_growth",
+      "saved": -20.580736542883,
+      "batch": -20.58,
+      "saved_fetched_at": "2026-10-27T09:48:51.679465+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:12.191937+08:00",
+      "notice_date": "2026-04-30 00:00:00",
+      "update_date": "2026-04-30 00:00:00"
+    },
+    {
+      "symbol": "600816.SH",
+      "field": "revenue_growth",
+      "saved": 237.315921357627,
+      "batch": 237.32,
+      "saved_fetched_at": "2026-10-27T10:02:36.135695+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:16.742506+08:00",
+      "notice_date": "2026-04-23 00:00:00",
+      "update_date": "2026-04-23 00:00:00"
+    },
+    {
+      "symbol": "600830.SH",
+      "field": "revenue_growth",
+      "saved": 15.279885605629,
+      "batch": 15.28,
+      "saved_fetched_at": "2026-10-27T10:03:29.020380+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:16.742506+08:00",
+      "notice_date": "2026-03-07 00:00:00",
+      "update_date": "2026-03-07 00:00:00"
+    },
+    {
+      "symbol": "600864.SH",
+      "field": "revenue_growth",
+      "saved": 0.996810387509,
+      "batch": 1.0,
+      "saved_fetched_at": "2026-10-27T10:05:20.838163+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:16.742506+08:00",
+      "notice_date": "2026-04-25 00:00:00",
+      "update_date": "2026-04-25 00:00:00"
+    },
+    {
+      "symbol": "600875.SH",
+      "field": "revenue_growth",
+      "saved": 12.798800983404,
+      "batch": 12.8,
+      "saved_fetched_at": "2026-10-27T10:07:12.171670+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:16.742506+08:00",
+      "notice_date": "2026-04-01 00:00:00",
+      "update_date": "2026-04-01 00:00:00"
+    },
+    {
+      "symbol": "600880.SH",
+      "field": "revenue_growth",
+      "saved": -21.232609652736,
+      "batch": -21.23,
+      "saved_fetched_at": "2026-10-27T10:07:39.508659+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:16.742506+08:00",
+      "notice_date": "2026-04-24 00:00:00",
+      "update_date": "2026-04-24 00:00:00"
+    },
+    {
+      "symbol": "601319.SH",
+      "field": "revenue_growth",
+      "saved": 7.568186349225,
+      "batch": 7.6,
+      "saved_fetched_at": "2026-10-27T10:21:17.771723+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:20.171790+08:00",
+      "notice_date": "2026-03-27 00:00:00",
+      "update_date": "2026-03-27 00:00:00"
+    },
+    {
+      "symbol": "601633.SH",
+      "field": "revenue_growth",
+      "saved": 10.203310364067,
+      "batch": 10.2,
+      "saved_fetched_at": "2026-10-27T10:23:58.939044+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:20.171790+08:00",
+      "notice_date": "2026-03-28 00:00:00",
+      "update_date": "2026-03-28 00:00:00"
+    },
+    {
+      "symbol": "601727.SH",
+      "field": "revenue_growth",
+      "saved": 9.030743397946,
+      "batch": 9.0,
+      "saved_fetched_at": "2026-10-27T10:25:05.742201+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:20.761944+08:00",
+      "notice_date": "2026-03-31 00:00:00",
+      "update_date": "2026-03-31 00:00:00"
+    },
+    {
+      "symbol": "603985.SH",
+      "field": "revenue_growth",
+      "saved": 129.433891984315,
+      "batch": 65.2990956744,
+      "saved_fetched_at": "2026-10-27T11:04:43.123626+08:00",
+      "batch_fetched_at": "2026-11-02T09:43:29.183008+08:00",
+      "notice_date": "2026-03-26 00:00:00",
+      "update_date": "2026-10-31 00:00:00"
+    }
+  ],
+  "fresh_single_stock_verification": {
+    "job_id": "ba57688e977943f6b9ebd50309618bc3",
+    "model_requests": 0,
+    "status": "completed",
+    "records": [
+      {
+        "REPORT_DATE": "2025-12-31 00:00:00",
+        "NOTICE_DATE": "2026-03-26 00:00:00",
+        "ROEJQ": 2.57,
+        "TOTALOPERATEREVETZ": 65.299095674435
+      }
+    ],
+    "fetched_at": "2026-11-02T09:44:37.728399+08:00",
+    "requests": {
+      "total": 1,
+      "completed": 1,
+      "failed": 0,
+      "network_attempts": 1,
+      "cache_hits": 0,
+      "serialized_bytes": 110947,
+      "http_bytes": 166963,
+      "observed_network_requests": 1,
+      "unmeasured_timeouts": 0,
+      "request_seconds": 1.3577837079999426
+    }
+  },
+  "historical_validation_passed": false,
+  "mainboard_collection_validation_passed": false
+}
