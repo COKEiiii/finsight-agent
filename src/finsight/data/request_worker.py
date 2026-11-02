@@ -49,6 +49,10 @@ def alternate_query(method, kwargs):
     import baostock as bs
     import pandas as pd
 
+    if method == "baostock_daily_kline":
+        from datetime import date
+        if date.fromisoformat(kwargs["date"]).isoformat() != kwargs["date"]:
+            raise ValueError("daily date must be YYYY-MM-DD")
     if not getattr(alternate_query, "logged_in", False):
         login = bs.login()
         checked_alternate_result(login, "login")
@@ -63,6 +67,8 @@ def alternate_query(method, kwargs):
         response = bs.query_stock_industry()
     elif method == "baostock_basic":
         response = bs.query_stock_basic()
+    elif method == "baostock_daily_kline":
+        response = bs.query_daily_history_k_AStock(date=kwargs["date"])
     elif method == "baostock_index":
         response = bs.query_history_k_data_plus("sh.000300", "date,close", start_date=kwargs["start_date"],
             end_date=kwargs["end_date"], frequency="d", adjustflag="3")
@@ -75,7 +81,11 @@ def alternate_query(method, kwargs):
         checked_alternate_result(response, method)
         rows.append(response.get_row_data())
     checked_alternate_result(response, method)
-    return pd.DataFrame(rows, columns=response.fields)
+    frame = pd.DataFrame(rows, columns=response.fields)
+    if method == "baostock_daily_kline":
+        from finsight.data.daily import validate_daily
+        validate_daily(frame, kwargs["date"])
+    return frame
 
 
 def request_worker(connection):

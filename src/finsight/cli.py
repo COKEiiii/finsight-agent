@@ -42,6 +42,8 @@ def parser() -> argparse.ArgumentParser:
         help="default auto retains the existing source path; paged is an opt-in annual-report validation path")
     sync.add_argument("--financial-page-size", type=int, choices=[100, 250, 500],
         help="paged annual-report rows per request; default 100, fixed on resume")
+    sync.add_argument("--price-source", choices=["auto", "daily"],
+        help="daily opts into batch raw prices for incremental updates; adjusted prices remain per stock")
     screen = commands.add_parser("screen", help="deterministic ranking and portfolio reference plan")
     screen.add_argument("--snapshot")
     screen.add_argument("--as-of", type=date.fromisoformat)
@@ -192,7 +194,8 @@ def main(argv: list[str] | None = None) -> int:
                                   args.universe == "mainboard", args.request_timeout, args.retries,
                                   resume=args.resume, background=args.background, limit=args.limit,
                                   workers=args.workers, interval=1 / args.requests_per_second,
-                                  financial_source=args.financial_source, financial_page_size=args.financial_page_size)
+                                  financial_source=args.financial_source, financial_page_size=args.financial_page_size,
+                                  price_source=args.price_source)
             output(result)
             if args.background or result.get("status") == "already_running":
                 return 0

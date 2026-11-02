@@ -26,7 +26,11 @@ class FinSight:
              timeout: float = 30, retries: int = 2, *, resume: str | None = None,
              background: bool = False, limit: int | None = None, workers: int = 4,
              interval: float = 1, api=None, clock=None, financial_source: str | None = None,
-             financial_page_size: int | None = None) -> dict:
+             financial_page_size: int | None = None, price_source: str | None = None) -> dict:
+        if price_source not in {None, "auto", "daily"}:
+            raise ValueError("price source must be auto or daily")
+        if price_source == "daily" and (provider != "akshare" or not mainboard) and resume is None:
+            raise ValueError("daily raw prices require an akshare mainboard validation profile")
         if financial_source is not None and financial_source not in {"auto", "paged", "single"}:
             raise ValueError("financial source must be auto, paged or single")
         if financial_source in {"paged", "single"} and provider != "akshare" and resume is None:
@@ -55,6 +59,8 @@ class FinSight:
             raise ValueError("invalid collector timeout/concurrency/retry/rate settings")
         jobs = Jobs(self.store)
         if resume:
+            if price_source is not None and jobs.get(resume)["config"].get("price_source", "auto") != price_source:
+                raise ValueError("price source is fixed for a resumed job")
             if financial_source is not None and jobs.get(resume)["config"].get("financial_source", "auto") != financial_source:
                 raise ValueError("financial source is fixed for a resumed job")
             if financial_page_size is not None and jobs.get(resume)["config"].get("financial_page_size") != financial_page_size:
@@ -83,6 +89,7 @@ class FinSight:
             config = {"as_of": str(as_of) if as_of else None, "start": str(start) if start else None,
                 "symbols": symbols, "mainboard": mainboard, "limit": limit,
                 "financial_source": financial_source or "auto",
+                "price_source": price_source or "auto",
                 "financial_page_size": (financial_page_size or 100) if financial_source == "paged" else None,
                 "timeout": timeout, "retries": retries, "workers": workers, "interval": interval,
                 "universe_id": uid, "base_snapshot_id": previous.snapshot_id if previous else None,

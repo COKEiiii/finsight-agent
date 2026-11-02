@@ -1,0 +1,155 @@
+{
+  "job_id": "88489b9d1cb648ceae1617fdcf6dc728",
+  "reference_snapshot": "akshare-2026-10-29-8fa2340955",
+  "scope": "one-day adapter comparison only",
+  "model_requests": 0,
+  "production_snapshot_changed": false,
+  "comparisons": [
+    {
+      "symbol": "600036.SH",
+      "price_rows": 1,
+      "valuation_rows": 1,
+      "all_values_exact": true,
+      "price_fields": [
+        "symbol",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "adj_close",
+        "volume",
+        "amount",
+        "suspended",
+        "prev_close",
+        "limit_up",
+        "limit_down"
+      ],
+      "valuation_fields": [
+        "symbol",
+        "trade_date",
+        "pe_ttm",
+        "pb"
+      ],
+      "raw_close": 43.55,
+      "adjusted_close": 250.0752488,
+      "market_source": "baostock:query_daily_history_k_AStock+query_history_k_data_plus:adjustflag=1",
+      "valuation_source": "baostock:query_daily_history_k_AStock"
+    },
+    {
+      "symbol": "000001.SZ",
+      "price_rows": 1,
+      "valuation_rows": 1,
+      "all_values_exact": true,
+      "price_fields": [
+        "symbol",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "adj_close",
+        "volume",
+        "amount",
+        "suspended",
+        "prev_close",
+        "limit_up",
+        "limit_down"
+      ],
+      "valuation_fields": [
+        "symbol",
+        "trade_date",
+        "pe_ttm",
+        "pb"
+      ],
+      "raw_close": 11.64,
+      "adjusted_close": 1485.99601632,
+      "market_source": "baostock:query_daily_history_k_AStock+query_history_k_data_plus:adjustflag=1",
+      "valuation_source": "baostock:query_daily_history_k_AStock"
+    },
+    {
+      "symbol": "000728.SZ",
+      "price_rows": 1,
+      "valuation_rows": 1,
+      "all_values_exact": true,
+      "price_fields": [
+        "symbol",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "adj_close",
+        "volume",
+        "amount",
+        "suspended",
+        "prev_close",
+        "limit_up",
+        "limit_down"
+      ],
+      "valuation_fields": [
+        "symbol",
+        "trade_date",
+        "pe_ttm",
+        "pb"
+      ],
+      "raw_close": 6.63,
+      "adjusted_close": 17.02442118,
+      "market_source": "baostock:query_daily_history_k_AStock+query_history_k_data_plus:adjustflag=1",
+      "valuation_source": "baostock:query_daily_history_k_AStock"
+    }
+  ],
+  "status": "completed",
+  "elapsed_seconds": 47.394,
+  "requests": {
+    "total": 7,
+    "completed": 7,
+    "failed": 0,
+    "network_attempts": 7,
+    "cache_hits": 3,
+    "serialized_bytes": 579037,
+    "http_bytes": 0,
+    "observed_network_requests": 8,
+    "unmeasured_timeouts": 0,
+    "request_seconds": 47.24056829099936
+  },
+  "recorded_date": "2026-11-02",
+  "production_source_changed": false,
+  "full_mainboard_acceptance_passed": false,
+  "historical_validation_passed": false,
+  "offline_anchor_audit": {
+    "snapshot_id": "akshare-2026-10-29-8fa2340955",
+    "window": [
+      "2026-07-29",
+      "2026-10-29"
+    ],
+    "rows": 182268,
+    "valid_pairs": 182268,
+    "within_1e_8": 182268,
+    "max_reconstruction_error": 1.4551915228366852e-11,
+    "latest_anchors": 2988,
+    "anchors": [
+      {
+        "symbol": "600036.SH",
+        "date": "2026-10-29",
+        "inferred_factor": 5.742256,
+        "reconstruction_error": 0.0
+      },
+      {
+        "symbol": "000001.SZ",
+        "date": "2026-10-29",
+        "inferred_factor": 127.662888,
+        "reconstruction_error": 2.2737367544323206e-13
+      },
+      {
+        "symbol": "000728.SZ",
+        "date": "2026-10-29",
+        "inferred_factor": 2.529913,
+        "reconstruction_error": 0.0
+      }
+    ],
+    "factor_inference_used_in_production": false,
+    "complete_event_semantics_verified": false,
+    "model_requests": 0
+  }
+}

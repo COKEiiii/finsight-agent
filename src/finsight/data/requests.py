@@ -187,7 +187,8 @@ class RequestBroker:
             try:
                 self.jobs.check_cancelled(self.job_id)
                 timeout = max(self.timeout, 120) if method in {"stock_yjbb_em", "stock_info_sh_name_code",
-                    "stock_info_sz_name_code", "stock_zh_a_spot_em", "baostock_industry", "baostock_basic"} else self.timeout
+                    "stock_info_sz_name_code", "stock_zh_a_spot_em", "baostock_industry", "baostock_basic",
+                    "baostock_daily_kline"} else self.timeout
                 if self.api is None:
                     with self.alternate_lock if method.startswith("baostock_") else nullcontext():
                         if method.startswith("baostock_") and self.alternate_unavailable:

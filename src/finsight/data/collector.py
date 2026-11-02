@@ -51,15 +51,17 @@ class Collector(AKShareProvider):
         self.mainboard = config.get("mainboard", False)
         self.sample_mode = not self.mainboard or bool(config.get("symbols"))
         self.financial_source = config.get("financial_source", "auto")
-        self.fallback_market = False
+        self.price_source = config.get("price_source", "auto")
+        self.fallback_market = self.price_source == "daily"
+        self.daily_prices, self.daily_sessions, self.daily_calendar = {}, [], []
         self.skip_bulk_financials = False
         if broker.api is None:
             with broker.store.connect() as db:
                 row = db.execute("SELECT 1 FROM job_requests r JOIN jobs j ON j.job_id=r.job_id "
                     "WHERE r.method='stock_yjbb_em' AND r.error_kind IN ('timeout','rate_limit') "
                     "AND substr(j.created_at,1,10)>=? LIMIT 1", ((broker.clock().date() - timedelta(days=7)).isoformat(),)).fetchone()
-            self.fallback_market = row is not None
-            if self.fallback_market:
+            self.fallback_market = self.fallback_market or row is not None
+            if row is not None:
                 self.issues.append("近七日旧式批量财报曾超时；行情使用 BaoStock，财报按任务配置选择来源。")
             with broker.store.connect() as db:
                 failed = db.execute("SELECT 1 FROM job_requests WHERE method='eastmoney_annual_page' "
@@ -256,10 +258,13 @@ class Collector(AKShareProvider):
     def _bars_baostock(self, code: str, lower: str, day: str):
         qualified = ("sh." if code.startswith("6") else "sz.") + code
         kwargs = {"code": qualified, "start_date": lower, "end_date": day}
-        raw = self.call("baostock_kline", **kwargs, adjustflag="3")
-        raw_fetched = raw.attrs["fetched_at"]
-        adjusted = self.call("baostock_kline", **kwargs, adjustflag="1")
-        fetched = max(raw_fetched, adjusted.attrs["fetched_at"])
+        raw = self._daily_raw(qualified, lower, day)
+        daily = raw is not None
+        if not daily:
+            raw = self._baostock_window(kwargs, "3", day)
+        raw_fetched = None if daily else raw.attrs["fetched_at"]
+        adjusted = self._baostock_window(kwargs, "1", day)
+        adjusted_fetched = adjusted.attrs["fetched_at"]
         raw = raw.rename(columns={"date": "trade_date", "preclose": "prev_close"})
         adjusted = adjusted.rename(columns={"date": "trade_date", "close": "adj_close"})
         raw = raw.merge(adjusted[["trade_date", "adj_close"]], on="trade_date", how="left", validate="one_to_one")
@@ -272,13 +277,91 @@ class Collector(AKShareProvider):
         status = raw.get("tradestatus", pd.Series(pd.NA, index=raw.index, dtype="string"))
         raw["suspended"] = status.astype("string").str.strip().map({"0": True, "1": False}).astype("boolean")
         raw["limit_up"], raw["limit_down"] = np.nan, np.nan
-        raw["source"], raw["fetched_at"] = "baostock:query_history_k_data_plus", fetched
+        raw["source"] = ("baostock:query_daily_history_k_AStock+query_history_k_data_plus:adjustflag=1"
+                         if daily else "baostock:query_history_k_data_plus")
+        raw["fetched_at"] = (raw["_raw_fetched_at"].map(lambda seen: max(seen, adjusted_fetched))
+                             if daily else max(raw_fetched, adjusted_fetched))
         prices = raw[["symbol", "trade_date", "open", "high", "low", "close", "adj_close", "volume", "amount",
                       "suspended", "prev_close", "limit_up", "limit_down", "source", "fetched_at"]]
         vals = raw[["symbol", "trade_date", "peTTM", "pbMRQ", "source", "fetched_at"]].rename(
             columns={"peTTM": "pe_ttm", "pbMRQ": "pb"})
+        if daily:
+            vals["source"], vals["fetched_at"] = "baostock:query_daily_history_k_AStock", raw["_raw_fetched_at"]
         is_st = bool(raw.loc[raw["trade_date"] == day, "isST"].eq("1").any())
         return prices, vals, is_st
+
+    def _baostock_window(self, kwargs: dict, adjustment: str, day: str):
+        frame = self.call("baostock_kline", **kwargs, adjustflag=adjustment)
+        if day not in set(frame["date"]) and frame.attrs.get("loaded_at") != frame.attrs.get("fetched_at"):
+            frame = self.call("baostock_kline", **kwargs, adjustflag=adjustment, force_refresh=True)
+        return frame
+
+    def _price_lower(self, symbol: str, start: date, calendar: pd.DataFrame) -> str:
+        old = self.base_groups["prices"].get(symbol)
+        if old is not None and not old.empty:
+            prior = calendar.loc[calendar["trade_date"] <= old["trade_date"].max(), "trade_date"].tolist()
+            if prior:
+                return max(str(start), prior[max(0, len(prior) - 10)])
+        return str(start)
+
+    def _prepare_daily_prices(self, stocks, start: date, day: str, calendar: pd.DataFrame):
+        if self.price_source != "daily":
+            return
+        from finsight.data.daily import validate_daily
+        self.daily_prices, self.daily_sessions = {}, []
+        self.daily_calendar = calendar["trade_date"].tolist()
+        recent = calendar.loc[calendar["trade_date"] <= day, "trade_date"].tolist()[-61:]
+        lower = []
+        wanted = set()
+        for stock in stocks.to_dict("records"):
+            listing = pd.to_datetime(stock.get("listed_on"), errors="coerce")
+            structural = ("ST" in stock["name"].upper() or "退" in stock["name"] or
+                          (pd.notna(listing) and listing + pd.DateOffset(years=2) > pd.Timestamp(day)))
+            old = self.base_groups["prices"].get(stock["symbol"])
+            if not structural and old is not None and not old.empty:
+                candidate = self._price_lower(stock["symbol"], start, calendar)
+                required = calendar.loc[calendar["trade_date"].between(candidate, day), "trade_date"]
+                if required.empty or required.min() < recent[0]:
+                    continue
+                lower.append(candidate)
+                wanted.add(("sh." if stock["code"].startswith("6") else "sz.") + stock["code"])
+        if not lower:
+            self.jobs.update(self.job_id, progress={"daily_raw_status": "single_stock_bootstrap"})
+            return
+        # Batch only the recent factor window; older/bootstrap ranges retain the existing per-stock path.
+        sessions = calendar.loc[calendar["trade_date"].between(min(lower), day), "trade_date"].tolist()[-61:]
+        self.daily_sessions = sessions
+        self.jobs.update(self.job_id, progress={"phase": "daily_raw", "daily_raw_status": "collecting",
+            "daily_raw_dates_total": len(sessions), "daily_raw_dates_completed": 0,
+            "daily_raw_error": None, "daily_raw_failed_date": None, "daily_raw_missing_members": {}})
+        parts, missing = [], {}
+        for session in sessions:
+            try:
+                frame = validate_daily(self.call("baostock_daily_kline", date=session), session)
+                frame["_raw_fetched_at"] = frame.attrs["fetched_at"]
+            except (ValueError, KeyError) as exc:
+                self.issues.append(f"daily raw {session}: {exc}; incomplete windows use per-stock raw quotes")
+                self.jobs.update(self.job_id, progress={"daily_raw_status": "per_stock_fallback",
+                    "daily_raw_error": str(exc)[:200], "daily_raw_failed_date": session})
+                break
+            parts.append(frame)
+            missing[session] = len(wanted - set(frame["code"]))
+            self.jobs.update(self.job_id, progress={"phase": "daily_raw", "daily_raw_dates_total": len(sessions),
+                "daily_raw_dates_completed": len(parts), "daily_raw_missing_members": missing})
+        else:
+            self.jobs.update(self.job_id, progress={"daily_raw_status": "partial_members" if any(missing.values()) else "complete"})
+        if parts:
+            self.daily_prices = {code: frame for code, frame in pd.concat(parts, ignore_index=True).groupby("code", sort=False)}
+
+    def _daily_raw(self, code: str, lower: str, day: str):
+        frame = self.daily_prices.get(code)
+        expected = {session for session in self.daily_calendar if lower <= session <= day}
+        if frame is None or not expected or not expected.issubset(self.daily_sessions):
+            return None
+        selected = frame[frame["date"].between(lower, day)]
+        if set(selected["date"]) != expected:
+            return None
+        return selected.copy().reset_index(drop=True)
 
     def financial_history_fallback(self, symbol: str, start: date, day: date, calendar: pd.DataFrame):
         code = symbol[:6]
@@ -350,11 +433,7 @@ class Collector(AKShareProvider):
         structural = state["is_st"] or state["is_delisting"] or (pd.notna(listing) and listing + pd.DateOffset(years=2) > pd.Timestamp(day))
         if structural:
             return state, old_prices, old_vals, old_fin, issues
-        lower = str(start)
-        if not old_prices.empty:
-            prior = calendar[calendar["trade_date"] <= old_prices["trade_date"].max()]["trade_date"].tolist()
-            if prior:
-                lower = max(str(start), prior[max(0, len(prior) - 10)])
+        lower = self._price_lower(symbol, start, calendar)
         backup_vals = None
         try:
             if self.fallback_market:
@@ -479,6 +558,7 @@ class Collector(AKShareProvider):
                 stocks["industry_observed_at"] = industry_observed
             except (ValueError, KeyError):
                 self.issues.append("备用行业分类不可用；未知行业计入缺失。")
+        self._prepare_daily_prices(stocks, start, day, calendar)
         results = []
         with ThreadPoolExecutor(max_workers=self.broker.workers) as executor:
             futures = [executor.submit(self._symbol, row, annual, start, day, calendar) for row in stocks.to_dict("records")]
